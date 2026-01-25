@@ -1,8 +1,13 @@
 <script lang="ts">
-	import { user, logout } from '$lib/atproto';
+	import { user, logout, putRecord } from '$lib/atproto';
 	import Avatar from '$lib/UI/Avatar.svelte';
 	import Button from '$lib/UI/Button.svelte';
 	import { loginModalState } from '$lib/UI/LoginModal.svelte';
+	import { onMount } from 'svelte';
+
+	onMount(() => {
+		putRecord({ collection: 'xyz.statusphere.status', record: {} });
+	});
 </script>
 
 <div class="mx-auto my-4 max-w-3xl px-4 md:my-32">

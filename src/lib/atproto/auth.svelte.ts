@@ -7,7 +7,6 @@ import {
 	deleteStoredSession
 } from '@atcute/oauth-browser-client';
 import { AppBskyActorDefs } from '@atcute/bluesky';
-import type { ActorIdentifier, Did } from '@atcute/lexicons';
 import {
 	CompositeDidDocumentResolver,
 	CompositeHandleResolver,
@@ -25,6 +24,8 @@ import { replaceState } from '$app/navigation';
 import { metadata } from './metadata';
 import { getDetailedProfile } from './methods';
 import { signUpPDS } from './settings';
+
+import type { ActorIdentifier, Did } from '@atcute/lexicons';
 
 export const user = $state({
 	agent: null as OAuthUserAgent | null,

@@ -1,5 +1,6 @@
 import type { Did, Handle } from '@atcute/lexicons';
 import { user } from './auth.svelte';
+import type { AllowedCollection } from './settings';
 import {
 	CompositeDidDocumentResolver,
 	CompositeHandleResolver,
@@ -16,7 +17,7 @@ export type Collection = `${string}.${string}.${string}`;
 export function parseUri(uri: string) {
 	const [did, collection, rkey] = uri.replace('at://', '').split('/');
 	return { did, collection, rkey } as {
-		collection: `${string}.${string}.${string}`;
+		collection: Collection;
 		rkey: string;
 		did: string;
 	};
@@ -85,7 +86,7 @@ export async function listRecords({
 	did,
 	collection,
 	cursor,
-	limit = 0,
+	limit = 100,
 	client
 }: {
 	did?: Did;
@@ -112,7 +113,7 @@ export async function listRecords({
 			params: {
 				repo: did,
 				collection,
-				limit: limit || 100,
+				limit: !limit || limit > 100 ? 100 : limit,
 				cursor: currentCursor
 			}
 		});
@@ -131,7 +132,7 @@ export async function listRecords({
 export async function getRecord({
 	did,
 	collection,
-	rkey,
+	rkey = 'self',
 	client
 }: {
 	did?: Did;
@@ -140,7 +141,6 @@ export async function getRecord({
 	client?: Client;
 }) {
 	did ??= user.did;
-	rkey ??= 'self';
 
 	if (!collection) {
 		throw new Error('Missing parameters for getRecord');
@@ -164,11 +164,11 @@ export async function getRecord({
 
 export async function putRecord({
 	collection,
-	rkey,
+	rkey = 'self',
 	record
 }: {
-	collection: Collection;
-	rkey: string;
+	collection: AllowedCollection;
+	rkey?: string;
 	record: Record<string, unknown>;
 }) {
 	if (!user.client || !user.did) throw new Error('No rpc or did');
@@ -187,7 +187,13 @@ export async function putRecord({
 	return response;
 }
 
-export async function deleteRecord({ collection, rkey }: { collection: Collection; rkey: string }) {
+export async function deleteRecord({
+	collection,
+	rkey = 'self'
+}: {
+	collection: AllowedCollection;
+	rkey: string;
+}) {
 	if (!user.client || !user.did) throw new Error('No profile or rpc or did');
 
 	const response = await user.client.post('com.atproto.repo.deleteRecord', {
@@ -258,7 +264,7 @@ export async function getBlobURL({
 	return `${pds}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${blob.ref.$link}`;
 }
 
-export function getImageBlobUrl({
+export function getCDNImageBlobUrl({
 	did,
 	blob
 }: {
@@ -270,7 +276,7 @@ export function getImageBlobUrl({
 		};
 	};
 }) {
-	return `https://cdn.bsky.app/img/feed_thumbnail/plain/${did}/${blob.ref.$link}@jpeg`;
+	return `https://cdn.bsky.app/img/feed_thumbnail/plain/${did}/${blob.ref.$link}@webp`;
 }
 
 export async function searchActorsTypeahead(

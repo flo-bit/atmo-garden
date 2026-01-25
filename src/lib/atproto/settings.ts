@@ -1,23 +1,37 @@
 export const SITE = 'https://flo-bit.dev';
 
-// optionally add action=create/update/delete to only allow those actions for a collection
-export const collections: string[] = ['xyz.statusphere.status'];
-// example: only allow create and delete
-// export const collections: string[] = ['xyz.statusphere.status?action=create&action=update'];
-
-export const rpcCalls: Record<string, string | string[]> = {
-	// example: allow authenticated proxying to bsky appview to get a users liked posts
-	//'did:web:api.bsky.app#bsky_appview': ['app.bsky.feed.getActorLikes']
-	// https://docs.bsky.app/docs/api/app-bsky-feed-get-actor-likes
+type Permissions = {
+	collections: readonly string[];
+	rpc: Record<string, string | string[]>;
+	blobs: readonly string[];
 };
 
-export const blobs = [] as string | string[] | undefined;
+export const permissions = {
+	// collections you can create/delete/update
 
-// example: allowing video and html uploads
-// export const blobs = ['video/*', 'text/html'] as string | string[] | undefined;
+	// example: only allow create and delete
+	// collections: ['xyz.statusphere.status?action=create&action=update'],
+	collections: ['xyz.statusphere.status'],
 
-// example: allowing all blob types
-// export const blobs = ['*/*'] as string | string[] | undefined;
+	// what types of authenticated proxied requests you can make to services
+
+	// example: allow authenticated proxying to bsky appview to get a users liked posts
+	//rpc: {'did:web:api.bsky.app#bsky_appview': ['app.bsky.feed.getActorLikes']}
+	rpc: {},
+
+	// what types of blobs you can upload to a users PDS
+
+	// example: allowing video and html uploads
+	// blobs: ['video/*', 'text/html']
+	// example: allowing all blob types
+	// blobs: ['*/*']
+	blobs: ['hello']
+} as const satisfies Permissions;
+
+// Extract base collection name (before any query params)
+type ExtractCollectionBase<T extends string> = T extends `${infer Base}?${string}` ? Base : T;
+
+export type AllowedCollection = ExtractCollectionBase<(typeof permissions.collections)[number]>;
 
 // which PDS to use for signup
 // ATTENTION: pds.rip is only for development, all accounts get deleted automatically after a week

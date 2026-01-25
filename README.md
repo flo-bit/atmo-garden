@@ -74,7 +74,6 @@ npm install @atcute/atproto @atcute/bluesky @atcute/identity-resolver @atcute/le
 
 6. (optionally) set your base in `svelte.config.js` (e.g. for github pages: `base: '/your-repo-name/'`) while keeping it as `''` in development.
 
-
 ```ts
 const config = {
 	// ...
@@ -93,13 +92,12 @@ const config = {
 
 7. setup the correct permissions (see below)
 
-
 ## how to use
 
 ### set permissions you request on sign-in in `$lib/atproto/settings.ts` (see commented out examples for more info)
 
 - add collections to the collections array
-- add rpcs to rpcCalls
+- rpcs for authenticated proxied requests
 - blobs for uploading blobs
 
 ### change sign up pds
@@ -152,3 +150,8 @@ const response = await user.client.get('app.bsky.feed.getActorLikes', {
 	}
 });
 ```
+
+## todo
+
+- check if pds supports prompt=create
+- add lexicon stuff

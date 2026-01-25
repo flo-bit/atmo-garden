@@ -14,6 +14,6 @@ export {
 	uploadBlob,
 	describeRepo,
 	getBlobURL,
-	getImageBlobUrl,
+	getCDNImageBlobUrl as getImageBlobUrl,
 	searchActorsTypeahead
 } from './methods';

@@ -16,7 +16,7 @@
 	import { AppBskyActorDefs } from '@atcute/bluesky';
 	import Avatar from './Avatar.svelte';
 
-	let { signUp = true, loginOnSelect = false }: { signUp?: boolean; loginOnSelect?: boolean } =
+	let { signUp = true, loginOnSelect = true }: { signUp?: boolean; loginOnSelect?: boolean } =
 		$props();
 
 	let value = $state('');

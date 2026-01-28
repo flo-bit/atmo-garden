@@ -122,7 +122,9 @@
 						{#if showRecentLogins}
 							<div class="mt-2 mb-2 text-sm font-medium">Recent logins</div>
 							<div class="flex flex-col gap-2">
-								{#each Object.values(recentLogins).slice(0, 4) as recentLogin}
+								{#each Object.values(recentLogins)
+									.filter((l) => l.handle && l.handle !== 'handle.invalid')
+									.slice(0, 4) as recentLogin}
 									<div class="group">
 										<div
 											class="group-hover:bg-base-300 bg-base-200 dark:bg-base-700 dark:hover:bg-base-600 dark:border-base-500/50 border-base-300 relative flex h-10 w-full items-center justify-between gap-2 rounded-full border px-2 font-semibold transition-colors duration-100"
@@ -197,6 +199,7 @@
 										selectedActor = undefined;
 										value = '';
 									}}
+									type="button"
 									class="cursor-pointer rounded-full p-0.5"
 								>
 									<svg

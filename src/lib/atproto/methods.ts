@@ -304,7 +304,7 @@ export async function uploadBlob({ blob }: { blob: Blob }) {
  * @param did - The DID of the repository (defaults to current user)
  * @returns Repository metadata or undefined on failure
  */
-export async function describeRepo({ client, did }: { client: Client; did?: Did }) {
+export async function describeRepo({ client, did }: { client?: Client; did?: Did }) {
 	did ??= user.did;
 	if (!did) {
 		throw new Error('Error describeRepo: No did');

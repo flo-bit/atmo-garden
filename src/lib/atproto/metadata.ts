@@ -1,5 +1,5 @@
 import { resolve } from '$app/paths';
-import { permissions, SITE } from './settings';
+import { permissions, REDIRECT_PATH, SITE } from './settings';
 
 function constructScope() {
 	const repos = permissions.collections.map((collection) => 'repo:' + collection).join(' ');
@@ -14,9 +14,9 @@ function constructScope() {
 	}
 
 	let blobScope: string | undefined = undefined;
-	if (Array.isArray(permissions.blobs)) {
+	if (Array.isArray(permissions.blobs) && permissions.blobs.length > 0) {
 		blobScope = 'blob?' + permissions.blobs.map((b) => 'accept=' + b).join('&');
-	} else if (permissions.blobs) {
+	} else if (permissions.blobs && permissions.blobs.length > 0) {
 		blobScope = 'blob:' + permissions.blobs;
 	}
 
@@ -26,7 +26,7 @@ function constructScope() {
 
 export const metadata = {
 	client_id: SITE + resolve('/oauth-client-metadata.json'),
-	redirect_uris: [SITE + resolve('/')],
+	redirect_uris: [SITE + resolve(REDIRECT_PATH)],
 	scope: constructScope(),
 	grant_types: ['authorization_code', 'refresh_token'],
 	response_types: ['code'],

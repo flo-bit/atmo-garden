@@ -3,7 +3,7 @@
 
 	import { onMount } from 'svelte';
 	import { initClient } from '$lib/atproto';
-	import LoginModal from '$lib/UI/LoginModal.svelte';
+	import LoginModal from '$lib/atproto/UI/LoginModal.svelte';
 
 	let { children } = $props();
 

@@ -35,7 +35,7 @@ const config = {
 
 7. setup the correct permissions (see below)
 
-### or manually install in your own project
+### or manually add to your own project
 
 1. copy the `src/lib/atproto` folder into your own project
 2. also copy the `src/routes/oauth-client-metadata.json` folder into your project
@@ -72,7 +72,7 @@ export default defineConfig({
 npm install @atcute/atproto @atcute/bluesky @atcute/identity-resolver @atcute/lexicons @atcute/oauth-browser-client @atcute/client
 ```
 
-6. (optionally) set your base in `svelte.config.js` (e.g. for github pages: `base: '/your-repo-name/'`) while keeping it as `''` in development.
+6. (optionally) set your base in `svelte.config.js` (e.g. for deploying to github pages: `base: '/your-repo-name/'`) while keeping it as `''` in development.
 
 ```ts
 const config = {
@@ -102,7 +102,7 @@ const config = {
 
 ### change sign up pds
 
-If you want to allow sign-up, change the `signUpPDS` variable in `$lib/atproto/settings.ts` to a pds of your choice
+If you want to allow sign-up, change the `devPDS` and `prodPDS` variables in `$lib/atproto/settings.ts` to a pds of your choice
 
 ATTENTION: the current setting (pds.rip) is only for development, all accounts get deleted automatically after a week
 
@@ -115,18 +115,18 @@ Either use the `LoginModal` component to render a login modal or use the `user` 
 import { user } from '$lib/atproto';
 
 // methods:
+user.isInitializing;
+user.isLoggedIn;
 user.login(handle);
 user.signup();
-user.isLoggedIn;
 user.logout();
 ```
 
-LoginModal is a component that renders a login modal, add it for a quick login flow (needs tailwind).
-(copy the `src/lib/UI` folder into your projects `src/lib` folder, add the `src/app.css` content to your `app.css`)
+LoginModal is a component that renders a login modal, add it for a quick login flow (needs tailwind and tailwind/forms, copy the `src/app.css` content to your `app.css`).
 
 ```svelte
 <script>
-	import { LoginModal, loginModalState } from '$lib/atproto';
+	import { LoginModal, loginModalState } from '$lib/atproto/ui';
 </script>
 
 <LoginModal />

@@ -22,8 +22,8 @@ import { dev } from '$app/environment';
 import { replaceState } from '$app/navigation';
 
 import { metadata } from './metadata';
-import { getDetailedProfile } from './methods';
-import { signUpPDS } from './settings';
+import { describeRepo, getDetailedProfile } from './methods';
+import { DOH_RESOLVER, REDIRECT_PATH, signUpPDS } from './settings';
 import { SvelteURLSearchParams } from 'svelte/reactivity';
 
 import type { ActorIdentifier, Did } from '@atcute/lexicons';
@@ -42,13 +42,13 @@ export async function initClient() {
 
 	const clientId = dev
 		? `http://localhost` +
-			`?redirect_uri=${encodeURIComponent('http://127.0.0.1:5179')}` +
+			`?redirect_uri=${encodeURIComponent('http://127.0.0.1:5179' + REDIRECT_PATH)}` +
 			`&scope=${encodeURIComponent(metadata.scope)}`
 		: metadata.client_id;
 
 	const handleResolver = new CompositeHandleResolver({
 		methods: {
-			dns: new DohJsonHandleResolver({ dohUrl: 'https://mozilla.cloudflare-dns.com/dns-query' }),
+			dns: new DohJsonHandleResolver({ dohUrl: DOH_RESOLVER }),
 			http: new WellKnownHandleResolver()
 		}
 	});
@@ -56,7 +56,7 @@ export async function initClient() {
 	configureOAuth({
 		metadata: {
 			client_id: clientId,
-			redirect_uri: `${dev ? 'http://127.0.0.1:5179' : metadata.redirect_uris[0]}`
+			redirect_uri: `${dev ? 'http://127.0.0.1:5179' + REDIRECT_PATH : metadata.redirect_uris[0]}`
 		},
 		identityResolver: new LocalActorResolver({
 			handleResolver: handleResolver,
@@ -175,7 +175,7 @@ async function finalizeLogin(params: SvelteURLSearchParams, did?: Did) {
 
 			localStorage.setItem('recent-logins', JSON.stringify(recentLogins));
 		} catch {
-			console.log('failed to save to recent logins');
+			console.error('failed to save to recent logins');
 		}
 	} catch (error) {
 		console.error('error finalizing login', error);
@@ -190,7 +190,7 @@ async function resumeSession(did: Did) {
 		const session = await getSession(did, { allowStale: true });
 
 		if (session.token.expires_at && session.token.expires_at < Date.now()) {
-			throw Error('session expired');
+			throw Error('session expired, signing out!');
 		}
 
 		if (session.token.scope !== metadata.scope) {
@@ -224,6 +224,16 @@ async function loadProfile(actor: Did) {
 
 	const response = await getDetailedProfile();
 
-	user.profile = response;
-	localStorage.setItem(`profile-${actor}`, JSON.stringify(response));
+	if (!response || response.handle === 'handle.invalid') {
+		console.log('invalid handle or no profile from bsky, fetching from repo description');
+		const repo = await describeRepo({ did: actor });
+		user.profile = {
+			did: actor,
+			handle: repo?.handle || 'handle.invalid'
+		};
+		localStorage.setItem(`profile-${actor}`, JSON.stringify(user.profile));
+	} else {
+		user.profile = response;
+		localStorage.setItem(`profile-${actor}`, JSON.stringify(response));
+	}
 }

@@ -1,13 +1,9 @@
 <script lang="ts">
 	import { user, logout, putRecord } from '$lib/atproto';
-	import Avatar from '$lib/UI/Avatar.svelte';
-	import Button from '$lib/UI/Button.svelte';
-	import { loginModalState } from '$lib/UI/LoginModal.svelte';
+	import Avatar from '$lib/atproto/UI/Avatar.svelte';
+	import Button from '$lib/atproto/UI/Button.svelte';
+	import { loginModalState } from '$lib/atproto/UI/LoginModal.svelte';
 	import { onMount } from 'svelte';
-
-	onMount(() => {
-		putRecord({ collection: 'xyz.statusphere.status', record: {} });
-	});
 </script>
 
 <div class="mx-auto my-4 max-w-3xl px-4 md:my-32">
@@ -24,8 +20,8 @@
 	{/if}
 
 	{#if !user.isInitializing && !user.agent}
-		<div class="mt-8 text-sm">not signed in</div>
-		<Button class="mt-4" onclick={() => loginModalState.show()}>Sign In</Button>
+		<div class="mt-8 text-sm">not logged in</div>
+		<Button class="mt-4" onclick={() => loginModalState.show()}>Login</Button>
 	{/if}
 
 	{#if user.isLoggedIn}

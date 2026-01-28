@@ -1,3 +1,5 @@
+import { dev } from '$app/environment';
+
 export const SITE = 'https://flo-bit.dev';
 
 type Permissions = {
@@ -25,7 +27,7 @@ export const permissions = {
 	// blobs: ['video/*', 'text/html']
 	// example: allowing all blob types
 	// blobs: ['*/*']
-	blobs: ['hello']
+	blobs: []
 } as const satisfies Permissions;
 
 // Extract base collection name (before any query params)
@@ -35,4 +37,11 @@ export type AllowedCollection = ExtractCollectionBase<(typeof permissions.collec
 
 // which PDS to use for signup
 // ATTENTION: pds.rip is only for development, all accounts get deleted automatically after a week
-export const signUpPDS = 'https://pds.rip/';
+const devPDS = 'https://pds.rip/';
+const prodPDS = 'https://selfhosted.social/';
+export const signUpPDS = dev ? devPDS : prodPDS;
+
+// where to redirect after oauth login/signup, e.g. /oauth/callback
+export const REDIRECT_PATH = '/';
+
+export const DOH_RESOLVER = 'https://mozilla.cloudflare-dns.com/dns-query';

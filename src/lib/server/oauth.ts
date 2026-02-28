@@ -72,7 +72,10 @@ export function createOAuthClient(env?: App.Platform['env']): OAuthClient {
 	}
 
 	// In production, use confidential client with keyset
-	const key: ClientAssertionPrivateJwk = JSON.parse(env!.CLIENT_ASSERTION_KEY);
+	if (!env?.CLIENT_ASSERTION_KEY) {
+		throw new Error('CLIENT_ASSERTION_KEY secret is not set. Run: pnpm generate-key && npx wrangler secret put CLIENT_ASSERTION_KEY');
+	}
+	const key: ClientAssertionPrivateJwk = JSON.parse(env.CLIENT_ASSERTION_KEY);
 	const SITE = 'https://flo-bit.dev';
 
 	return new OAuthClient({

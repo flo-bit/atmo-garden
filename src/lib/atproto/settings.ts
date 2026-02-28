@@ -1,6 +1,8 @@
 import { dev } from '$app/environment';
 
-export const SITE = dev ? 'http://localhost:5183' : 'https://flo-bit.dev';
+export const SITE = dev
+	? 'http://localhost:5183'
+	: 'https://svelte-atproto-oauth-cloudflare-workers.flobit-dev.workers.dev/';
 
 type Permissions = {
 	collections: readonly string[];

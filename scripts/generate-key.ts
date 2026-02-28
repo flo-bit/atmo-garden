@@ -1,9 +1,10 @@
 import { generateClientAssertionKey } from '@atcute/oauth-node-client';
 
 const key = await generateClientAssertionKey('main-key');
+const json = JSON.stringify(key);
 
-console.log('Add this to your .dev.vars file:\n');
-console.log(`CLIENT_ASSERTION_KEY=${JSON.stringify(JSON.stringify(key))}`);
-console.log('\nFor Cloudflare Workers, add it as a secret:');
-console.log('npx wrangler secret put CLIENT_ASSERTION_KEY');
-console.log('(paste the JSON value without the outer quotes)');
+console.log('Generated client assertion key.\n');
+console.log('Set it as a Cloudflare Workers secret:\n');
+console.log('  npx wrangler secret put CLIENT_ASSERTION_KEY\n');
+console.log('Then paste this value:\n');
+console.log(json);

@@ -51,6 +51,7 @@ export const oauthLogout = command(async () => {
 	}
 
 	cookies.delete('did', { path: '/' });
+	cookies.delete('scope', { path: '/' });
 
 	return { ok: true };
 });

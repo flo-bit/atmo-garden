@@ -1,6 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import { createOAuthClient } from '$lib/atproto/server/oauth';
 import { setSignedCookie } from '$lib/atproto/server/signed-cookie';
+import { scope } from '$lib/atproto/metadata';
 import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 
@@ -12,13 +13,16 @@ export const GET: RequestHandler = async ({ url, platform, cookies }) => {
 	try {
 		const { session } = await oauth.callback(url.searchParams);
 
-		setSignedCookie(cookies, 'did', session.did, {
+		const cookieOpts = {
 			path: '/',
 			httpOnly: true,
 			secure: !dev,
-			sameSite: 'lax',
+			sameSite: 'lax' as const,
 			maxAge: 60 * 60 * 24 * 180 // 180 days
-		});
+		};
+
+		setSignedCookie(cookies, 'did', session.did, cookieOpts);
+		setSignedCookie(cookies, 'scope', scope, cookieOpts);
 	} catch (e) {
 		console.error('OAuth callback failed:', e);
 		redirect(303, '/?error=auth_failed');

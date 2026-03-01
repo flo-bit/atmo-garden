@@ -30,4 +30,7 @@ export const signUpPDS = dev ? devPDS : prodPDS;
 // where to redirect after oauth login/signup
 export const REDIRECT_PATH = '/oauth/callback';
 
+// redirect the user back to the page they were on before login
+export const REDIRECT_TO_LAST_PAGE_ON_LOGIN = true;
+
 export const DOH_RESOLVER = 'https://mozilla.cloudflare-dns.com/dns-query';

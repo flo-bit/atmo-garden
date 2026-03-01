@@ -24,5 +24,14 @@ export const GET: RequestHandler = async ({ url, platform, cookies }) => {
 		redirect(303, '/?error=auth_failed');
 	}
 
+	const returnTo = cookies.get('oauth_return_to');
+	if (returnTo) {
+		cookies.delete('oauth_return_to', { path: '/' });
+		const decoded = decodeURIComponent(returnTo);
+		if (decoded.startsWith('/') && !decoded.startsWith('//')) {
+			redirect(303, decoded);
+		}
+	}
+
 	redirect(303, '/');
 };

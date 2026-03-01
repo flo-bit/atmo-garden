@@ -1,6 +1,7 @@
 import { AppBskyActorDefs } from '@atcute/bluesky';
 import type { ActorIdentifier, Did } from '@atcute/lexicons';
 import { page } from '$app/state';
+import { REDIRECT_TO_LAST_PAGE_ON_LOGIN } from './settings';
 
 export const user = {
 	get profile() {
@@ -29,6 +30,9 @@ export async function login(handle: string) {
 
 	const { oauthLogin } = await import('./server/oauth.remote');
 	const { url } = await oauthLogin({ handle });
+	if (REDIRECT_TO_LAST_PAGE_ON_LOGIN) {
+		document.cookie = `oauth_return_to=${encodeURIComponent(window.location.pathname + window.location.search)};path=/;max-age=600;samesite=lax`;
+	}
 	window.location.assign(url);
 
 	// Wait for navigation (prevents UI flash)
@@ -42,6 +46,9 @@ export async function login(handle: string) {
 export async function signup() {
 	const { oauthLogin } = await import('./server/oauth.remote');
 	const { url } = await oauthLogin({ signup: true });
+	if (REDIRECT_TO_LAST_PAGE_ON_LOGIN) {
+		document.cookie = `oauth_return_to=${encodeURIComponent(window.location.pathname + window.location.search)};path=/;max-age=600;samesite=lax`;
+	}
 	window.location.assign(url);
 
 	await new Promise((_resolve, reject) => {

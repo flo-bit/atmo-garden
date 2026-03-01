@@ -6,7 +6,7 @@ import { permissions } from '../settings';
 // Validate collection format and check against allowed list from settings
 const collectionSchema = v.pipe(
 	v.string(),
-	v.regex(/^[a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z][a-zA-Z0-9-]*$/),
+	v.regex(/^[a-zA-Z][a-zA-Z0-9-]*(\.[a-zA-Z][a-zA-Z0-9-]*){2,}$/),
 	v.check(
 		(c) => permissions.collections.some((allowed) => c === allowed || allowed.startsWith(c + '?')),
 		'Collection not in allowed list'

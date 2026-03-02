@@ -6,6 +6,7 @@ export default defineConfig({
 	plugins: [sveltekit(), tailwindcss()],
 	server: {
 		host: '127.0.0.1',
-		port: 5183
+		port: 5183,
+		allowedHosts: []
 	}
 });

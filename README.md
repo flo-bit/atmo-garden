@@ -1,8 +1,12 @@
-> **Work in progress** — APIs and file structure may change without notice.
+# svelte cloudflare statusphere
 
-# svelte atproto cloudflare workers oauth
+> **Work in progress**
 
-SvelteKit + AT Protocol OAuth on Cloudflare Workers. Server-side OAuth with `@atcute/oauth-node-client`, Cloudflare KV for session/state storage, and SvelteKit remote functions for type-safe client-server communication.
+![screenshot](./screenshot.png)
+
+svelte + cloudflare workers statusphere demo, built with lots of [`@atcute`](https://github.com/mary-ext/atcute) packages, [ufos.microcosm.blue](https://ufos.microcosm.blue/) (for recent status updates without its own backend), jetstream subscription for real-time updates and [@foxui](https://flo-bit.dev/ui-kit) for ui components.
+
+also doubles as a demo of `@atcute/oauth-node-client` for server-side oauth flows in cloudflare workers, with session storage in KV and HMAC-signed cookies and lots of useful functions.
 
 **Demo:** https://statusphere.atmo.tools
 
@@ -13,11 +17,11 @@ pnpm install
 pnpm dev
 ```
 
-Dev mode uses a loopback OAuth client — no keys or Cloudflare setup needed. Open the URL shown in the terminal and log in with any Bluesky handle. (The port is randomized per project — see `src/lib/atproto/port.ts`.)
+Dev mode uses a loopback oauth client — no keys or cloudflare setup needed. Open the URL shown in the terminal and log in with any Bluesky handle. (The port is randomized per project in case you're running multiple projects at one — set `src/lib/atproto/port.ts`.)
 
 See [GETTING_STARTED.md](GETTING_STARTED.md) for production deployment, tunnel setup, and configuration.
 
-## Adding to an existing project
+## Adding the oauth part to an existing project
 
 **With an AI agent** — paste this into Claude Code (or similar) in your existing repo:
 

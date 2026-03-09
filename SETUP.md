@@ -79,8 +79,6 @@ export const handle: Handle = async ({ event, resolve }) => {
 };
 ```
 
-If you already have hooks, use SvelteKit's `sequence` helper to combine them.
-
 **`wrangler.jsonc`** — add KV namespaces and public URL:
 
 ```sh
@@ -88,11 +86,16 @@ npx wrangler kv namespace create OAUTH_SESSIONS
 npx wrangler kv namespace create OAUTH_STATES
 ```
 
+add to `wrangler.jsonc` (change the name, url and ids):
 ```jsonc
 {
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "{your-worker-name}",
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"compatibility_date": "2025-12-25",
   "compatibility_flags": ["nodejs_compat_v2"],
   "vars": {
-    "OAUTH_PUBLIC_URL": "https://your-domain.com"
+    //for production: "OAUTH_PUBLIC_URL": "https://your-domain.com"
   },
   "kv_namespaces": [
     { "binding": "OAUTH_SESSIONS", "id": "<your-id>" },
@@ -161,7 +164,7 @@ npx wrangler secret put COOKIE_SECRET  # paste the generated secret
 
 ## 6. Add login UI
 
-### Option A: `@foxui/social` login modal (recommended)
+### Option A: `@foxui/social` login modal
 
 Install the UI packages:
 

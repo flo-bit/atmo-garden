@@ -2,7 +2,7 @@
 	import '../app.css';
 	import { AtprotoLoginModal } from '@foxui/social';
 	import { login, signup } from '$lib/atproto';
-	import { ThemeToggle } from '@foxui/core';
+	import { Head, ThemeToggle } from '@foxui/core';
 
 	let { children } = $props();
 </script>
@@ -21,3 +21,10 @@
 />
 
 <ThemeToggle class="absolute top-2 left-2" />
+
+<Head
+	title="statusphere"
+	emojiFavicon="🥳"
+	description="svelte + cloudflare workers statusphere"
+	image="/og.png"
+/>

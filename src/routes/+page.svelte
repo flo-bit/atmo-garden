@@ -1,136 +1,187 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
 	import { flip } from 'svelte/animate';
 	import { scale } from 'svelte/transition';
-	import { user, logout, uploadBlob } from '$lib/atproto';
-	import { Button, Avatar } from '@foxui/core';
-	import { atProtoLoginModalState, EmojiPicker } from '@foxui/social';
+	import { onMount } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
+	import { user, logout } from '$lib/atproto';
+	import { Button } from '@foxui/core';
+	import { atProtoLoginModalState, GithubCorner, PopoverEmojiPicker } from '@foxui/social';
 	import { RelativeTime } from '@foxui/time';
+	import { JetstreamSubscription } from '@atcute/jetstream';
 
-	import { createTID, getCDNImageBlobUrl } from '$lib/atproto/methods';
+	import { createTID, getDetailedProfile } from '$lib/atproto/methods';
 	import { putRecord } from '$lib/atproto/server/repo.remote';
+	import { emojiToNotoAnimatedWebp } from '$lib/emojis';
 
 	let { data } = $props();
 
-	let uploading = $state(false);
-	let fileInput: HTMLInputElement;
+	let open = $state(false);
+	let localStatuses = $state<{ did: string; rkey: string; status: string; createdAt: string }[]>(
+		[]
+	);
+	let liveStatuses = $state<{ did: string; rkey: string; status: string; createdAt: string }[]>([]);
 
-	async function handleImageUpload() {
-		const file = fileInput?.files?.[0];
-		if (!file) return;
+	// Deduplication set seeded from server data
+	// svelte-ignore state_referenced_locally
+	let seenKeys = new SvelteSet<string>(data.statuses.map((s) => `${s.did}-${s.rkey}`));
 
-		uploading = true;
+	// Client-side profile cache seeded from server data
+	// svelte-ignore state_referenced_locally
+	let profiles = $state<Record<string, { handle: string; displayName?: string; avatar?: string }>>({
+		...data.profiles
+	});
+
+	async function fetchProfile(did: string) {
+		if (profiles[did]) return;
 		try {
-			const blobRef = await uploadBlob({ blob: file });
-			await putRecord({
-				rkey: createTID(),
-				collection: 'social.atmo.test.blob',
-				record: {
-					blob: blobRef,
-					createdAt: new Date().toISOString()
-				}
-			});
-			fileInput.value = '';
-			await invalidateAll();
-		} catch (e) {
-			console.error('Upload failed:', e);
-		} finally {
-			uploading = false;
+			const profile = await getDetailedProfile({ did: did as import('@atcute/lexicons').Did });
+			if (!profile) return;
+			profiles[did] = {
+				handle: profile.handle,
+				displayName: profile.displayName,
+				avatar: profile.avatar
+			};
+		} catch {
+			// ignore fetch errors
 		}
 	}
+
+	let allStatuses = $derived([...localStatuses, ...liveStatuses, ...data.statuses]);
+
+	// Jetstream subscription
+	onMount(() => {
+		const subscription = new JetstreamSubscription({
+			url: 'wss://jetstream1.us-east.bsky.network',
+			wantedCollections: ['xyz.statusphere.status']
+		});
+
+		const iterator = subscription[Symbol.asyncIterator]();
+
+		(async () => {
+			try {
+				while (true) {
+					const { value: event, done } = await iterator.next();
+					if (done) break;
+
+					if (event.kind !== 'commit') continue;
+					if (event.commit.operation !== 'create') continue;
+
+					const { did } = event;
+					const { rkey, record } = event.commit as {
+						rkey: string;
+						record: { status: string; createdAt: string };
+					};
+					const key = `${did}-${rkey}`;
+
+					if (seenKeys.has(key)) continue;
+					seenKeys.add(key);
+
+					await fetchProfile(did);
+
+					liveStatuses = [
+						{ did, rkey, status: record.status, createdAt: record.createdAt },
+						...liveStatuses
+					];
+				}
+			} catch {
+				// subscription closed or errored
+			}
+		})();
+
+		return () => {
+			iterator.return!();
+		};
+	});
 </script>
 
-<div class="mx-auto my-4 max-w-3xl px-4 md:my-32">
-	<h1 class="text-3xl font-bold">svelte atproto cloudflare workers oauth demo</h1>
+<div class="mx-auto max-w-xl px-4 my-16">
+	<h1 class="mb-4 text-3xl font-bold">svelte + cloudflare workers statusphere</h1>
 
-	<a
-		href="https://github.com/flo-bit/atproto-oauth-cloudflare"
-		target="_blank"
-		class="dark:text-accent-500 mt-2 text-sm text-rose-600">source code</a
-	>
+	<GithubCorner href="https://github.com/flo-bit/atproto-oauth-cloudflare" />
 
 	{#if !user.isLoggedIn}
-		<div class="mt-8 text-sm">not logged in</div>
-		<Button class="mt-4" onclick={() => atProtoLoginModalState.show()}>Login</Button>
-	{/if}
-
-	{#if user.isLoggedIn}
-		<div class="mt-8 text-sm">signed in as</div>
-
-		<div class="mt-2 flex gap-1 font-semibold">
-			<Avatar src={user.profile?.avatar} />
-			<span>{user.profile?.displayName || user.profile?.handle}</span>
-		</div>
-
-		<div class="my-4 text-sm">
-			Statusphere test:
-			<EmojiPicker
+		<Button class="my-4" size="lg" onclick={() => atProtoLoginModalState.show()}
+			>Login to post a status</Button
+		>
+	{:else}
+		<div class="my-8 flex items-center gap-2">
+			<PopoverEmojiPicker
 				onpicked={async (emoji) => {
+					const rkey = createTID();
+					const createdAt = new Date().toISOString();
+					const key = `${user.did!}-${rkey}`;
+					seenKeys.add(key);
+					localStatuses = [
+						{ did: user.did!, rkey, status: emoji.unicode, createdAt },
+						...localStatuses
+					];
+					open = false;
 					await putRecord({
-						rkey: createTID(),
+						rkey,
 						collection: 'xyz.statusphere.status',
 						record: {
 							status: emoji.unicode,
-							createdAt: new Date()
+							createdAt
 						}
 					});
-					await invalidateAll();
 				}}
-			/>
-			{#if data.statuses.length > 0}
-				<div class="mt-4 text-sm">Recent statuses:</div>
-				<ul class="mt-2">
-					{#each data.statuses as status, i (status.rkey)}
-						<li class="flex items-center gap-2 py-1" animate:flip={{ duration: 300 }}>
-							{#if i === 0}
-								<span class="text-2xl" in:scale={{ duration: 300 }}>{status.status}</span>
+				bind:open
+			>
+				{#snippet child({ props })}
+					<Button size="lg" {...props}>Post a status</Button>
+				{/snippet}
+			</PopoverEmojiPicker>
+			<Button variant="ghost" onclick={() => logout()}>Sign Out</Button>
+		</div>
+	{/if}
+
+	{#if allStatuses.length > 0}
+		<ul class="mt-4">
+			{#each allStatuses as status, i (`${status.did}-${status.rkey}`)}
+				{@const profile =
+					profiles[status.did] ??
+					(status.did === user.did && data.profile
+						? { displayName: data.profile.displayName, handle: data.profile.handle }
+						: null)}
+				{@const animated = emojiToNotoAnimatedWebp(status.status)}
+				<li class="flex items-center gap-3" animate:flip={{ duration: 300 }}>
+					<div class="flex flex-col items-center">
+						<div
+							class="bg-base-200 dark:bg-base-950/50 border-base-400/50 dark:border-base-800 flex h-12 w-12 items-center inset-shadow-xs inset-shadow-base-800/10 dark:inset-shadow-black/60 justify-center rounded-full border text-2xl"
+						>
+							{#if animated}
+								{#if i === 0}
+									<img in:scale={{ duration: 300 }} src={animated} alt={status.status} class="h-7 w-7" />
+								{:else}
+									<img src={animated} alt={status.status} class="h-7 w-7" />
+								{/if}
+							{:else if i === 0}
+								<span in:scale={{ duration: 300 }}>{status.status}</span>
 							{:else}
-								<span class="text-2xl">{status.status}</span>
+								<span>{status.status}</span>
 							{/if}
-							<span class="text-base-400 dark:text-base-500 text-sm">
-								<RelativeTime date={new Date(status.createdAt)} locale="en-US" />
-							</span>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</div>
-
-		<div class="my-4 text-sm">
-			<div class="font-semibold">Blob upload test:</div>
-			<div class="mt-2 flex items-center gap-2">
-				<input
-					bind:this={fileInput}
-					type="file"
-					accept="image/*"
-					onchange={handleImageUpload}
-					disabled={uploading}
-					class="text-sm file:mr-2 file:rounded file:border-0 file:bg-rose-100 file:px-3 file:py-1 file:text-sm file:text-rose-700 dark:file:bg-rose-900 dark:file:text-rose-200"
-				/>
-				{#if uploading}
-					<span class="text-base-400 text-sm">uploading...</span>
-				{/if}
-			</div>
-
-			{#if data.blobs.length > 0}
-				<div class="mt-4 text-sm">Uploaded blobs:</div>
-				<div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-					{#each data.blobs as blob (blob.rkey)}
-						<div class="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
-							<img
-								src={getCDNImageBlobUrl({ did: user.did ?? undefined, blob: blob.blob })}
-								alt="uploaded blob"
-								class="aspect-square w-full object-cover"
-							/>
-							<div class="text-base-400 dark:text-base-500 p-1 text-center text-xs">
-								<RelativeTime date={new Date(blob.createdAt)} locale="en-US" />
-							</div>
 						</div>
-					{/each}
-				</div>
-			{/if}
-		</div>
-
-		<Button class="mt-4" onclick={() => logout()}>Sign Out</Button>
+						{#if i < allStatuses.length - 1}
+							<div class="bg-base-400/50 dark:bg-base-800 min-h-3 w-px grow"></div>
+						{/if}
+					</div>
+					<div class="flex items-center gap-1.5 pb-3">
+						{#if profile}
+							<span class="text-accent-500 text-sm font-medium"
+								>{profile.displayName || profile.handle}</span
+							>
+						{:else}
+							<span class="text-base-400 dark:text-base-500 text-sm"
+								>{status.did.slice(0, 20)}...</span
+							>
+						{/if}
+						<span class="text-base-400 dark:text-base-500 text-sm">&middot;</span>
+						<span class="text-base-400 dark:text-base-500 text-sm">
+							<RelativeTime date={new Date(status.createdAt)} locale="en-US" />
+						</span>
+					</div>
+				</li>
+			{/each}
+		</ul>
 	{/if}
 </div>

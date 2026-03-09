@@ -52,6 +52,7 @@
 	},
 	"license": "MIT",
 	"dependencies": {
+		"@atcute/jetstream": "^1.1.2",
 		"@foxui/core": "^0.5.1",
 		"@foxui/social": "^0.5.1",
 		"@foxui/time": "^0.5.1",

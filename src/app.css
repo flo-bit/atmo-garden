@@ -3,7 +3,7 @@
 @plugin '@tailwindcss/forms';
 @source "../node_modules/@foxui";
 
-/* @custom-variant dark (&:where(.dark, .dark *)); */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
 	--color-base-50: var(--base-50);
@@ -33,17 +33,17 @@
 
 @layer base {
 	:root {
-		--accent-50: var(--color-rose-50);
-		--accent-100: var(--color-rose-100);
-		--accent-200: var(--color-rose-200);
-		--accent-300: var(--color-rose-300);
-		--accent-400: var(--color-rose-400);
-		--accent-500: var(--color-rose-500);
-		--accent-600: var(--color-rose-600);
-		--accent-700: var(--color-rose-700);
-		--accent-800: var(--color-rose-800);
-		--accent-900: var(--color-rose-900);
-		--accent-950: var(--color-rose-950);
+		--accent-50: var(--color-sky-50);
+		--accent-100: var(--color-sky-100);
+		--accent-200: var(--color-sky-200);
+		--accent-300: var(--color-sky-300);
+		--accent-400: var(--color-sky-400);
+		--accent-500: var(--color-sky-500);
+		--accent-600: var(--color-sky-600);
+		--accent-700: var(--color-sky-700);
+		--accent-800: var(--color-sky-800);
+		--accent-900: var(--color-sky-900);
+		--accent-950: var(--color-sky-950);
 
 		--base-50: var(--color-stone-50);
 		--base-100: var(--color-stone-100);

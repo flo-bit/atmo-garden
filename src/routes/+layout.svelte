@@ -2,6 +2,7 @@
 	import '../app.css';
 	import { AtprotoLoginModal } from '@foxui/social';
 	import { login, signup } from '$lib/atproto';
+	import { ThemeToggle } from '@foxui/core';
 
 	let { children } = $props();
 </script>
@@ -18,3 +19,5 @@
 		return true;
 	}}
 />
+
+<ThemeToggle class="absolute top-2 left-2" />

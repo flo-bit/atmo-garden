@@ -4,7 +4,7 @@
 
 SvelteKit + AT Protocol OAuth on Cloudflare Workers. Server-side OAuth with `@atcute/oauth-node-client`, Cloudflare KV for session/state storage, and SvelteKit remote functions for type-safe client-server communication.
 
-**Demo:** https://svelte-atproto-oauth-cloudflare-workers.flobit-dev.workers.dev/
+**Demo:** https://statusphere.atmo.tools
 
 ## Quick Start
 
@@ -69,3 +69,8 @@ src/routes/(oauth)/
 ## License
 
 MIT
+
+
+## todo
+
+- make typesafe (with lexicons)

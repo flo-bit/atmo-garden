@@ -12,7 +12,7 @@
 		"enabled": true
 	},
 	"vars": {
-		"OAUTH_PUBLIC_URL": "https://svelte-atproto-oauth-cloudflare-workers.flobit-dev.workers.dev"
+		"OAUTH_PUBLIC_URL": "https://statusphere.atmo.tools"
 	},
 	"kv_namespaces": [
 		{

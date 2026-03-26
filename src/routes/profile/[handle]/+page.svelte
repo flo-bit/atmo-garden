@@ -6,10 +6,9 @@
 	import { Button } from '@foxui/core';
 	import { Loader2, LogOut } from '@lucide/svelte';
 	import { user, logout } from '$lib/atproto/auth.svelte';
-	import { actorToDid, getDetailedProfile } from '$lib/atproto/methods';
+	import { actorToDid } from '$lib/atproto/methods';
 	import { getCachedProfile, cacheProfile, prefetchThread, ingestFeedPosts } from '$lib/cache.svelte';
-	import { getAuthorFeed, followUser, unfollowUser } from '$lib/atproto/server/feed.remote';
-	import { Client, simpleFetchHandler } from '@atcute/client';
+	import { getAuthorFeed, followUser, unfollowUser, getProfile } from '$lib/atproto/server/feed.remote';
 	import type { FeedItem } from '$lib/cache.svelte';
 	import ScrollablePostList, { getCachedList, setCachedList } from '$lib/components/ScrollablePostList.svelte';
 
@@ -18,6 +17,8 @@
 	let isOwnProfile = $derived(user.did && profile?.did === user.did);
 	let followUri = $state<string | null>(null);
 	let isFollowing = $derived(followUri !== null);
+	let followsMe = $state(false);
+	let isMutual = $derived(isFollowing && followsMe);
 	let followLoading = $state(false);
 
 	let loading = $state(true);
@@ -60,6 +61,7 @@
 	async function loadProfile(actor: string) {
 		error = null;
 		followUri = null;
+		followsMe = false;
 
 		const key = `profile-${actor}`;
 
@@ -90,16 +92,14 @@
 			postsLoading = true;
 		}
 
-		// Fetch fresh profile
+		// Fetch fresh profile (authenticated if logged in, for viewer state)
 		try {
-			const client = new Client({
-				handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
-			});
-			const fresh = await getDetailedProfile({ did, client });
+			const fresh = await getProfile({ actor });
 			if (fresh) {
 				profile = fresh;
 				cacheProfile(fresh);
 				followUri = fresh.viewer?.following ?? null;
+				followsMe = !!fresh.viewer?.followedBy;
 			} else if (!cached) {
 				error = 'Profile not found';
 			}
@@ -155,7 +155,7 @@
 </script>
 
 <div>
-	<div class="mx-auto w-full max-w-xl flex-1">
+	<div class="mx-auto w-full max-w-lg flex-1">
 		{#if loading}
 			<div class="flex items-center justify-center py-12">
 				<Loader2 class="text-base-400 animate-spin" size={28} />
@@ -176,7 +176,7 @@
 				class=""
 			>
 				<div class="flex items-center justify-between">
-					<div class="flex gap-4 text-sm">
+					<div class="flex items-center gap-4 text-sm">
 						<button onclick={() => {}} class="hover:underline">
 							<span class="text-base-900 dark:text-base-100 font-semibold">{numberToHuman(profile.followsCount ?? 0)}</span>
 							<span class="text-base-500 dark:text-base-400"> following</span>
@@ -185,6 +185,13 @@
 							<span class="text-base-900 dark:text-base-100 font-semibold">{numberToHuman(profile.followersCount ?? 0)}</span>
 							<span class="text-base-500 dark:text-base-400"> followers</span>
 						</button>
+						{#if !isOwnProfile && user.did}
+							{#if isMutual}
+								<span class="bg-accent-100 text-accent-700 dark:bg-accent-900/30 dark:text-accent-400 rounded-full px-2 py-0.5 text-xs font-medium">Mutuals</span>
+							{:else if followsMe}
+								<span class="bg-base-200 text-base-600 dark:bg-base-800 dark:text-base-400 rounded-full px-2 py-0.5 text-xs font-medium">Follows you</span>
+							{/if}
+						{/if}
 					</div>
 					{#if isOwnProfile}
 						<Button variant="ghost" onclick={logout} class="gap-2" size="sm">
@@ -193,7 +200,7 @@
 						</Button>
 					{:else if user.did}
 						<Button
-							variant={isFollowing ? 'outline' : 'default'}
+							variant="primary"
 							size="sm"
 							onclick={toggleFollow}
 							disabled={followLoading}

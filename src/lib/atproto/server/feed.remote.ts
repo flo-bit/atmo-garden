@@ -162,6 +162,26 @@ export const deleteRsvp = command(
 	}
 );
 
+export const getProfile = command(
+	v.object({
+		actor: v.string()
+	}),
+	async (input) => {
+		const { locals } = getRequestEvent();
+
+		const client = locals.client ?? new Client({
+			handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
+		});
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const res = await client.get('app.bsky.actor.getProfile', {
+			params: { actor: input.actor as any } // eslint-disable-line @typescript-eslint/no-explicit-any
+		});
+		if (!res.ok) error(res.status, 'Failed to load profile');
+		return res.data;
+	}
+);
+
 export const getPostThread = command(
 	v.object({
 		uri: v.string(),

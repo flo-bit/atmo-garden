@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { UserProfile } from '@foxui/social';
+	import { UserProfile } from '$lib/components';
 	import { Button } from '@foxui/core';
 	import { Loader2, LogOut } from '@lucide/svelte';
 	import { user, logout } from '$lib/atproto/auth.svelte';

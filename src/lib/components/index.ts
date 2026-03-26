@@ -1,0 +1,29 @@
+export * from './action-buttons';
+export * from './atproto-login';
+export * from './embed';
+export * from './post';
+export * from './star-rating';
+export * from './social-icons';
+export * from './swiper-cards';
+export * from './user-profile';
+export * from './github-corner';
+export * from './chat';
+export * from './emoji-picker';
+export * from './bluesky-post';
+export * from './nested-comments';
+export * from './link-card';
+export * from './animated-emoji-picker';
+export * from './atproto-handle-popup';
+export * from './microblogging-post-creator';
+
+export function numberToHumanReadable(number: number) {
+	if (number < 1000) {
+		return number;
+	}
+
+	if (number < 1000000) {
+		return `${(number / 1000).toFixed(1)}k`;
+	}
+
+	return `${(number / 1000000).toFixed(1)}m`;
+}

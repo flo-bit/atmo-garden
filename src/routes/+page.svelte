@@ -2,8 +2,8 @@
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { user } from '$lib/atproto/auth.svelte';
-	import { blueskyPostToPostData } from '@foxui/social';
-	import { Post } from '@foxui/social';
+	import { blueskyPostToPostData } from '$lib/components';
+	import { Post } from '$lib/components';
 	import { Loader2 } from '@lucide/svelte';
 	import { loadFeed, likePost, unlikePost } from '$lib/atproto/server/feed.remote';
 	import { cachePost, prefetchThread, feedCache, prefetchNotifications, setFeedUri } from '$lib/cache.svelte';

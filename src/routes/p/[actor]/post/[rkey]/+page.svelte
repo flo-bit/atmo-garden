@@ -4,9 +4,9 @@
 	import { page } from '$app/state';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { actorToDid } from '$lib/atproto/methods';
-	import { blueskyPostToPostData } from '@foxui/social';
-	import { Post, NestedComments } from '@foxui/social';
-	import type { PostData } from '@foxui/social';
+	import { blueskyPostToPostData } from '$lib/components';
+	import { Post, NestedComments } from '$lib/components';
+	import type { PostData } from '$lib/components';
 	import { ArrowLeft, Loader2 } from '@lucide/svelte';
 	import { likePost, unlikePost, getPostThread } from '$lib/atproto/server/feed.remote';
 	import { getCachedPost, getCachedThread } from '$lib/cache.svelte';

@@ -4,7 +4,7 @@ import { dev } from '$app/environment';
 export const scopes = ['atproto', 'transition:generic', 'transition:chat.bsky'];
 
 // set to false to disable signup
-export const ALLOW_SIGNUP = true;
+export const ALLOW_SIGNUP = false;
 
 // which PDS to use for signup (change to your preferred PDS)
 const devPDS = 'https://pds.rip/';

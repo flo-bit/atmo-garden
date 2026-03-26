@@ -1,96 +1,77 @@
 <script lang="ts">
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
-	import type { Snapshot } from './$types';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { blueskyPostToPostData } from '@foxui/social';
 	import { Post } from '@foxui/social';
 	import { Loader2 } from '@lucide/svelte';
 	import { loadFeed, likePost, unlikePost } from '$lib/atproto/server/feed.remote';
-	import { cachePost, prefetchThread } from '$lib/post-cache.svelte';
+	import { cachePost, prefetchThread, feedCache, prefetchNotifications, setFeedUri } from '$lib/cache.svelte';
 
 	const LOGGED_IN_FEED = 'at://did:plc:3guzzweuqraryl3rdkimjamk/app.bsky.feed.generator/for-you';
 	const PUBLIC_FEED = 'at://did:plc:w4xbfzo7kqfes5zb7r6qv3rw/app.bsky.feed.generator/blacksky-trend';
 
 	let feedUri = $derived(user.did ? LOGGED_IN_FEED : PUBLIC_FEED);
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let posts = $state<any[]>([]);
-	let cursor = $state<string | null>(null);
-	let loading = $state(true);
+	$effect(() => { setFeedUri(feedUri); });
+
+	let loading = $derived(!feedCache.loaded);
 	let loadingMore = $state(false);
 
-	let pendingScrollTop = 0;
-
-	async function loadInitial() {
-		loading = true;
-		posts = [];
-		cursor = null;
-		try {
-			const result = await loadFeed({ feedUri });
-			posts = JSON.parse(JSON.stringify(result.posts));
-			for (const fp of posts) {
-				if (fp.post) {
-					cachePost(fp.post);
-					prefetchThread(fp.post.uri);
-				}
+	function cachePosts(posts: any[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+		for (const fp of posts) {
+			if (fp.post) {
+				cachePost(fp.post);
+				prefetchThread(fp.post.uri);
 			}
-			cursor = result.cursor;
-		} catch (e) {
-			console.error('Failed to load feed:', e);
-		} finally {
-			loading = false;
 		}
 	}
 
-	export const snapshot: Snapshot = {
-		capture: () => ({
-			posts,
-			cursor,
-			likeState,
-			likeCountDelta,
-			scrollY: window.scrollY
-		}),
-		restore: (snap) => {
-			posts = snap.posts;
-			cursor = snap.cursor;
-			likeState = snap.likeState;
-			likeCountDelta = snap.likeCountDelta;
-			loading = false;
-			pendingScrollTop = snap.scrollY;
+	async function loadInitial() {
+		try {
+			const result = await loadFeed({ feedUri });
+			feedCache.posts = JSON.parse(JSON.stringify(result.posts));
+			cachePosts(feedCache.posts);
+			feedCache.cursor = result.cursor;
+			feedCache.loaded = true;
+		} catch (e) {
+			console.error('Failed to load feed:', e);
+			feedCache.loaded = true;
 		}
-	};
+	}
 
 	onMount(async () => {
-		// Wait a tick to let snapshot restore run first
-		await new Promise((r) => setTimeout(r, 10));
-		if (posts.length > 0) {
-			// Restored from snapshot
-			for (const fp of posts) if (fp.post) cachePost(fp.post);
+		if (feedCache.loaded && feedCache.posts.length > 0) {
 			await tick();
-			window.scrollTo(0, pendingScrollTop);
+			window.scrollTo(0, feedCache.scrollY);
 		} else {
 			loadInitial();
+		}
+
+		// Prefetch notifications after a short delay
+		if (user.did) {
+			setTimeout(() => prefetchNotifications(), 1000);
+		}
+	});
+
+	onDestroy(() => {
+		if (typeof window !== 'undefined') {
+			feedCache.scrollY = window.scrollY;
 		}
 	});
 
 	async function loadMore() {
-		if (loadingMore || !cursor) return;
+		if (loadingMore || !feedCache.cursor) return;
 		loadingMore = true;
 		try {
 			const result = await loadFeed({
 				feedUri,
-				cursor
+				cursor: feedCache.cursor
 			});
 			const newPosts = JSON.parse(JSON.stringify(result.posts));
-			for (const fp of newPosts) {
-				if (fp.post) {
-					cachePost(fp.post);
-					prefetchThread(fp.post.uri);
-				}
-			}
-			posts = [...posts, ...newPosts];
-			cursor = result.cursor;
+			cachePosts(newPosts);
+			feedCache.posts = [...feedCache.posts, ...newPosts];
+			feedCache.cursor = result.cursor;
 		} catch (e) {
 			console.error('Failed to load more:', e);
 		} finally {
@@ -139,9 +120,9 @@
 	}
 
 	function handleScroll() {
-		if (loadingMore || !cursor) return;
+		if (loadingMore || !feedCache.cursor) return;
 		const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
-		if (scrollHeight - scrollTop - clientHeight < 800) {
+		if (scrollHeight - scrollTop - clientHeight < 2000) {
 			loadMore();
 		}
 	}
@@ -153,26 +134,27 @@
 </script>
 
 <div class="flex h-dvh flex-col">
-	<div class="mx-auto w-full max-w-xl">
+	<div class="mx-auto w-full max-w-lg">
 		<!-- Post list -->
 		<div>
 			{#if loading}
 				<div class="flex items-center justify-center py-12">
 					<Loader2 class="text-base-400 animate-spin" size={28} />
 				</div>
-			{:else if posts.length === 0}
+			{:else if feedCache.posts.length === 0}
 					<div class="flex h-full items-center justify-center">
 						<p class="text-base-500 dark:text-base-400">No posts</p>
 					</div>
 				{:else}
 					<div class="divide-base-200 dark:divide-base-800 divide-y">
-						{#each posts as feedPost, i (feedPost.post?.uri ? `${feedPost.post.uri}-${i}` : i)}
+						{#each feedCache.posts as feedPost, i (feedPost.post?.uri ? `${feedPost.post.uri}-${i}` : i)}
 							{#if feedPost.post}
 								{@const { postData, embeds } = blueskyPostToPostData(feedPost.post, 'https://bsky.app', feedPost.reason, feedPost.reply)}
 								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 							<div
 								class="px-4 py-4 cursor-pointer sm:px-0"
-								onclick={(e) => {
+								onmousedown={(e) => {
+									if (e.button !== 0) return;
 									if ((e.target as HTMLElement).closest('a, button')) return;
 									// eslint-disable-next-line @typescript-eslint/no-explicit-any
 									const record = feedPost.post.record as any;
@@ -213,6 +195,9 @@
 													},
 													repost: {
 														count: postData.repostCount
+													},
+													like: {
+														count: postData.likeCount
 													}
 												}}
 									/>
@@ -227,7 +212,7 @@
 						</div>
 					{/if}
 
-					{#if !cursor && posts.length > 0}
+					{#if !feedCache.cursor && feedCache.posts.length > 0}
 						<p class="text-base-400 py-6 text-center text-sm">You've reached the end</p>
 					{/if}
 

@@ -1,7 +1,7 @@
 import { dev } from '$app/environment';
 
 // OAuth scope — add scope.blob(), scope.rpc(), etc. as needed
-export const scopes = ['atproto', 'transition:generic'];
+export const scopes = ['atproto', 'transition:generic', 'transition:chat.bsky'];
 
 // set to false to disable signup
 export const ALLOW_SIGNUP = true;

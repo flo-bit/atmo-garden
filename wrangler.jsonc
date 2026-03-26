@@ -12,7 +12,7 @@
 		"enabled": true
 	},
 	"vars": {
-		"OAUTH_PUBLIC_URL": "https://statusphere.atmo.tools"
+		"OAUTH_PUBLIC_URL": "https://atmo.social"
 	},
 	"kv_namespaces": [
 		{

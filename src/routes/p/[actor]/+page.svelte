@@ -2,9 +2,14 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { UserProfile } from '@foxui/social';
-	import { Loader2 } from '@lucide/svelte';
+	import { Button } from '@foxui/core';
+	import { Loader2, LogOut } from '@lucide/svelte';
+	import { user, logout } from '$lib/atproto/auth.svelte';
 	import { actorToDid, getDetailedProfile } from '$lib/atproto/methods';
+	import { getCachedProfile, cacheProfile } from '$lib/cache.svelte';
 	import { Client, simpleFetchHandler } from '@atcute/client';
+
+	let isOwnProfile = $derived(user.did && profile?.did === user.did);
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -12,17 +17,31 @@
 	let profile = $state<any>(null);
 
 	onMount(async () => {
+		const actor = page.params.actor;
+
+		// Show cached profile instantly
+		const cached = getCachedProfile(actor);
+		if (cached) {
+			profile = cached;
+			loading = false;
+		}
+
+		// Always fetch full profile
 		try {
-			const actor = page.params.actor;
 			const did = await actorToDid(actor);
 			const client = new Client({
 				handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
 			});
-			profile = await getDetailedProfile({ did, client });
-			if (!profile) error = 'Profile not found';
+			const fresh = await getDetailedProfile({ did, client });
+			if (fresh) {
+				profile = fresh;
+				cacheProfile(fresh);
+			} else if (!cached) {
+				error = 'Profile not found';
+			}
 		} catch (e) {
 			console.error('Failed to load profile:', e);
-			error = 'Failed to load profile';
+			if (!cached) error = 'Failed to load profile';
 		} finally {
 			loading = false;
 		}
@@ -50,6 +69,14 @@
 				}}
 				class=""
 			/>
+			{#if isOwnProfile}
+				<div class="px-4 py-4">
+					<Button variant="ghost" onclick={logout} class="gap-2">
+						<LogOut size={16} />
+						Log out
+					</Button>
+				</div>
+			{/if}
 		{/if}
 	</div>
 </div>

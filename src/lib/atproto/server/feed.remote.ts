@@ -2,6 +2,7 @@ import { error } from '@sveltejs/kit';
 import { command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 import type { ResourceUri } from '@atcute/lexicons';
+import { Client, simpleFetchHandler } from '@atcute/client';
 import * as TID from '@atcute/tid';
 
 export const likePost = command(
@@ -56,6 +57,31 @@ export const unlikePost = command(
 	}
 );
 
+export const getPostThread = command(
+	v.object({
+		uri: v.string(),
+		depth: v.optional(v.number()),
+		parentHeight: v.optional(v.number())
+	}),
+	async (input) => {
+		const { locals } = getRequestEvent();
+
+		const client = locals.client ?? new Client({
+			handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
+		});
+
+		const res = await client.get('app.bsky.feed.getPostThread', {
+			params: {
+				uri: input.uri as ResourceUri,
+				depth: input.depth ?? 10,
+				parentHeight: input.parentHeight ?? 0
+			}
+		});
+		if (!res.ok) error(res.status, 'Failed to load thread');
+		return res.data;
+	}
+);
+
 export const loadFeed = command(
 	v.object({
 		feedUri: v.string(),
@@ -63,9 +89,12 @@ export const loadFeed = command(
 	}),
 	async (input) => {
 		const { locals } = getRequestEvent();
-		if (!locals.client) error(401, 'Not authenticated');
 
-		const res = await locals.client.get('app.bsky.feed.getFeed', {
+		const client = locals.client ?? new Client({
+			handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
+		});
+
+		const res = await client.get('app.bsky.feed.getFeed', {
 			params: {
 				feed: input.feedUri as ResourceUri,
 				limit: 30,

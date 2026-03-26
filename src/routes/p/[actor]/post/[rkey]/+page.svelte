@@ -2,17 +2,14 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import type { Snapshot } from './$types';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { actorToDid } from '$lib/atproto/methods';
 	import { blueskyPostToPostData } from '@foxui/social';
 	import { Post, NestedComments } from '@foxui/social';
 	import type { PostData } from '@foxui/social';
-	import { Loader2 } from '@lucide/svelte';
-	import { likePost, unlikePost } from '$lib/atproto/server/feed.remote';
-	import { getCachedPost, getCachedThread } from '$lib/post-cache.svelte';
-	import { Client, simpleFetchHandler } from '@atcute/client';
-	import type { ResourceUri } from '@atcute/lexicons';
+	import { ArrowLeft, Loader2 } from '@lucide/svelte';
+	import { likePost, unlikePost, getPostThread } from '$lib/atproto/server/feed.remote';
+	import { getCachedPost, getCachedThread } from '$lib/cache.svelte';
 
 	let loading = $state(true);
 	let loadingComments = $state(true);
@@ -97,29 +94,7 @@
 		};
 	}
 
-	let restored = false;
-
-	export const snapshot: Snapshot = {
-		capture: () => ({
-			postView,
-			comments,
-			postViewMap,
-			likeState,
-			likeCountDelta
-		}),
-		restore: (data) => {
-			postView = data.postView;
-			comments = data.comments;
-			postViewMap = data.postViewMap;
-			likeState = data.likeState;
-			likeCountDelta = data.likeCountDelta;
-			loading = false;
-			restored = true;
-		}
-	};
-
 	onMount(async () => {
-		if (restored) return;
 
 		try {
 			const did = await actorToDid(page.params.actor);
@@ -145,25 +120,20 @@
 				loading = false;
 			}
 
-			// Fetch full thread
-			const client = new Client({
-				handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
-			});
+			// Fetch full thread (authenticated if logged in, for viewer state)
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const data = await getPostThread({ uri }) as any;
 
-			const res = await client.get('app.bsky.feed.getPostThread', {
-				params: { uri: uri as ResourceUri, depth: 10, parentHeight: 0 }
-			});
-
-			if (!res.ok || res.data.thread.$type !== 'app.bsky.feed.defs#threadViewPost') {
+			if (!data.thread || data.thread.$type !== 'app.bsky.feed.defs#threadViewPost') {
 				if (!postView) error = 'Post not found';
 				return;
 			}
 
-			postView = res.data.thread.post;
+			postView = data.thread.post;
 
-			if (res.data.thread.replies?.length) {
+			if (data.thread.replies?.length) {
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				comments = threadToComments(res.data.thread.replies as any[]);
+				comments = threadToComments(data.thread.replies as any[]);
 			}
 		} catch (e) {
 			console.error('Failed to load post:', e);
@@ -180,7 +150,13 @@
 </script>
 
 <div>
-	<div class="mx-auto w-full max-w-xl">
+	<div class="mx-auto w-full max-w-xl py-4">
+		<button
+			onclick={() => history.back()}
+			class="text-base-500 hover:text-base-700 dark:text-base-400 dark:hover:text-base-200 mb-2 ml-4 rounded-lg p-1.5 transition-colors sm:ml-0"
+		>
+			<ArrowLeft size={20} />
+		</button>
 		{#if loading}
 			<div class="flex items-center justify-center py-12">
 				<Loader2 class="text-base-400 animate-spin" size={28} />
@@ -191,7 +167,7 @@
 			</div>
 		{:else if postView}
 			{@const { postData, embeds } = blueskyPostToPostData(postView)}
-			<div class="px-4 py-4 sm:px-0">
+			<div class="px-4 sm:px-0">
 				<Post
 					data={postData}
 					{embeds}
@@ -208,7 +184,8 @@
 							}
 						: {
 								reply: { count: postData.replyCount },
-								repost: { count: postData.repostCount }
+								repost: { count: postData.repostCount },
+								like: { count: postData.likeCount }
 							}}
 				/>
 			</div>
@@ -218,7 +195,7 @@
 					<Loader2 class="text-base-400 animate-spin" size={24} />
 				</div>
 			{:else if comments.length > 0}
-				<div class="px-4 py-4 sm:px-0">
+				<div class="px-4 sm:px-0">
 					<NestedComments {comments} onclickhandle={handleClickHandle} actions={commentActions} />
 				</div>
 			{/if}

@@ -52,6 +52,7 @@ export type EmbedRecordData = {
 	embed?: Embed;
 	onclick?: (data: EmbedRecordData, href?: string) => void;
 	onclickhandle?: (handle: string, href?: string) => void;
+	handleHref?: (handle: string) => string;
 };
 
 export type EmbedRecord = {

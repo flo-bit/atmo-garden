@@ -38,7 +38,7 @@
 			}
 
 			new Plyr(element, {
-				controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
+				controls: ['play-large', 'progress', 'current-time', 'mute', 'fullscreen'],
 				ratio: data.video.aspectRatio
 					? `${data.video.aspectRatio.width}:${data.video.aspectRatio.height}`
 					: '16:9'
@@ -47,7 +47,7 @@
 			element.src = src;
 			const { default: Plyr } = await import('plyr');
 			new Plyr(element, {
-				controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'fullscreen'],
+				controls: ['play-large', 'progress', 'current-time', 'mute', 'fullscreen'],
 				ratio: data.video.aspectRatio
 					? `${data.video.aspectRatio.width}:${data.video.aspectRatio.height}`
 					: '16:9'
@@ -78,10 +78,7 @@
 	</button>
 {:else}
 	<div
-		style={data.video.aspectRatio
-			? `aspect-ratio: ${data.video.aspectRatio.width} / ${data.video.aspectRatio.height}`
-			: 'aspect-ratio: 16 / 9'}
-		class="border-base-300 dark:border-base-400/40 w-full max-w-full overflow-hidden rounded-2xl border"
+		class="border-base-300 dark:border-base-400/40 max-h-96 w-full overflow-hidden rounded-2xl border"
 	>
 		<!-- svelte-ignore a11y_media_has_caption -->
 		<video bind:this={element} class="h-full w-full" aria-label={data.video.alt}></video>
@@ -91,5 +88,8 @@
 <style>
 	* {
 		--plyr-color-main: var(--color-accent-500);
+	}
+	div :global(.plyr) {
+		max-height: 24rem;
 	}
 </style>

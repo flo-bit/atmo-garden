@@ -5,12 +5,14 @@
 	import { House, MessageCircle, Bell } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { user } from '$lib/atproto/auth.svelte';
-	import { notificationsCache, startUnreadPoll, stopUnreadPoll, chatUnreadCount, startChatPoll, stopChatPoll, applyPendingFeed, startFeedPoll, stopFeedPoll } from '$lib/cache.svelte';
+	import { notificationsCache, startUnreadPoll, stopUnreadPoll, chatUnreadCount, startChatPoll, stopChatPoll, applyPendingFeed, startFeedPoll, stopFeedPoll, hydrateFromDb } from '$lib/cache.svelte';
 	import LoginModal, { loginModalState } from '$lib/LoginModal.svelte';
+	import ImageLightbox from '$lib/components/embed/ImageLightbox.svelte';
 	import Sidebar from '$lib/Sidebar.svelte';
 	let { children } = $props();
 
-	onMount(() => {
+	onMount(async () => {
+		await hydrateFromDb();
 		if (user.did) {
 			startUnreadPoll();
 			startChatPoll();
@@ -63,6 +65,7 @@
 </div>
 
 <LoginModal />
+<ImageLightbox />
 
 <Head
 	title="atmo.social"

@@ -17,7 +17,9 @@
 
 		actions,
 
+		href,
 		onclickhandle,
+		handleHref,
 		onclickavatar,
 
 		timestamp,
@@ -35,10 +37,14 @@
 
 <div
 	bind:this={ref}
-	class={cn('text-base-950 dark:text-base-50 min-w-0 transition-colors duration-200', className)}
+	class={cn('text-base-950 dark:text-base-50 relative min-w-0 transition-colors duration-200', className)}
 >
+	{#if href}
+		<a {href} class="absolute inset-0 z-0" aria-label="Open post"></a>
+	{/if}
+
 	{#if data.reposted}
-		<div class="mb-3 inline-flex items-center gap-2 text-xs">
+		<div class="relative z-[1] mb-3 inline-flex items-center gap-2 text-xs">
 			<svg
 				xmlns="http://www.w3.org/2000/svg"
 				viewBox="0 0 24 24"
@@ -55,12 +61,13 @@
 			<div class="inline-flex gap-1">
 				reposted by
 				{#if onclickhandle}
-					<button
-						class="hover:text-accent-600 dark:hover:text-accent-400 cursor-pointer font-bold"
-						onclick={() => onclickhandle(data.reposted!.handle, data.reposted!.href)}
+					<a
+						href={handleHref?.(data.reposted!.handle) ?? data.reposted!.href}
+						class="hover:text-accent-600 dark:hover:text-accent-400 font-bold no-underline"
+						onclick={(e) => { e.preventDefault(); onclickhandle(data.reposted!.handle, data.reposted!.href); }}
 					>
 						@{data.reposted.handle}
-					</button>
+					</a>
 				{:else}
 					<a
 						href={data.reposted.href}
@@ -74,7 +81,7 @@
 		</div>
 	{/if}
 	{#if data.replyTo}
-		<div class="mb-3 inline-flex items-center gap-2 text-xs">
+		<div class="relative z-[1] mb-3 inline-flex items-center gap-2 text-xs">
 			<svg
 				xmlns="http://www.w3.org/2000/svg"
 				viewBox="0 0 24 24"
@@ -91,12 +98,13 @@
 			<div class="inline-flex gap-1">
 				replying to
 				{#if onclickhandle}
-					<button
-						class="hover:text-accent-600 dark:hover:text-accent-400 cursor-pointer font-bold"
-						onclick={() => onclickhandle(data.replyTo!.handle, data.replyTo!.href)}
+					<a
+						href={handleHref?.(data.replyTo!.handle) ?? data.replyTo!.href}
+						class="hover:text-accent-600 dark:hover:text-accent-400 font-bold no-underline"
+						onclick={(e) => { e.preventDefault(); onclickhandle(data.replyTo!.handle, data.replyTo!.href); }}
 					>
 						@{data.replyTo.handle}
-					</button>
+					</a>
 				{:else}
 					<a
 						href={data.replyTo.href}
@@ -113,34 +121,42 @@
 	<div class="flex min-w-0 items-start gap-4">
 		{#if showAvatar}
 			{@const avatarClass = compact ? 'size-7' : 'size-10'}
-			{#if onclickavatar}
-				<button class="shrink-0 cursor-pointer" onclick={onclickavatar}>
-					<Avatar src={data.author.avatar} class={avatarClass} />
-				</button>
-			{:else if onclickhandle}
-				<button class="shrink-0 cursor-pointer" onclick={() => onclickhandle(data.author.handle, data.author.href)}>
-					<Avatar src={data.author.avatar} class={avatarClass} />
-				</button>
-			{:else}
-				<a href={data.author.href} {target} class="shrink-0">
-					<Avatar src={data.author.avatar} class={avatarClass} />
-				</a>
-			{/if}
+			<div class="relative z-[1] shrink-0">
+				{#if onclickavatar}
+					<button class="cursor-pointer" onclick={onclickavatar}>
+						<Avatar src={data.author.avatar} class={avatarClass} />
+					</button>
+				{:else if onclickhandle}
+					<a href={handleHref?.(data.author.handle) ?? data.author.href} onclick={(e) => { e.preventDefault(); onclickhandle(data.author.handle, data.author.href); }}>
+						<Avatar src={data.author.avatar} class={avatarClass} />
+					</a>
+				{:else}
+					<a href={data.author.href} {target}>
+						<Avatar src={data.author.avatar} class={avatarClass} />
+					</a>
+				{/if}
+			</div>
 		{/if}
 
 		<div class="w-full min-w-0">
-			<PostHeader
-				author={data.author}
-				createdAt={data.createdAt}
-				{timestamp}
-				{onclickhandle}
-				showAvatar={false}
-				{compact}
-				{logo}
-				{target}
-			/>
+			<div class="relative z-[1]">
+				<PostHeader
+					author={data.author}
+					createdAt={data.createdAt}
+					{timestamp}
+					{onclickhandle}
+					{handleHref}
+					showAvatar={false}
+					{compact}
+					{logo}
+					{target}
+				/>
+			</div>
 
-			<div class={cn('post-content break-words', compact ? 'text-sm' : 'text-base')} style="overflow-wrap: anywhere;">
+			<div
+				class={cn('post-content break-words', compact ? 'text-sm' : 'text-base')}
+				style="overflow-wrap: anywhere;"
+			>
 				{#if data.htmlContent}
 					{@html sanitize(data.htmlContent, { ADD_ATTR: ['target'] })}
 				{:else}
@@ -149,22 +165,26 @@
 			</div>
 
 			{#if embeds?.length}
-				{#each embeds as embed}
-					<Embed {embed} {showSensitive} />
-				{/each}
+				<div class="relative z-[1]">
+					{#each embeds as embed}
+						<Embed {embed} {showSensitive} />
+					{/each}
+				</div>
 			{/if}
 
 			{#if extraEmbeds}
-				<div class="flex flex-col gap-2 pt-3 text-sm">
+				<div class="relative z-[1] flex flex-col gap-2 pt-3 text-sm">
 					{@render extraEmbeds()}
 				</div>
 			{/if}
 
 			{#if actions}
-				<ActionButtons
-					{...actions}
-					class={cn('mt-4', actions.class)}
-				/>
+				<div class="relative z-[1]">
+					<ActionButtons
+						{...actions}
+						class={cn('mt-3', actions.class)}
+					/>
+				</div>
 			{/if}
 		</div>
 	</div>
@@ -173,6 +193,8 @@
 <style>
 	.post-content :global(a) {
 		color: var(--color-accent-600);
+		position: relative;
+		z-index: 10;
 	}
 
 	:global(.dark) .post-content :global(a) {

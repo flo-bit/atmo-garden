@@ -8,6 +8,7 @@
 		createdAt,
 		timestamp,
 		onclickhandle,
+		handleHref,
 		onclickavatar,
 		showAvatar = true,
 		compact = false,
@@ -25,9 +26,9 @@
 				<Avatar src={author.avatar} class={avatarClass} />
 			</button>
 		{:else if onclickhandle}
-			<button class="shrink-0 cursor-pointer" onclick={() => onclickhandle(author.handle, author.href)}>
+			<a href={handleHref?.(author.handle) ?? author.href} class="shrink-0" onclick={(e) => { e.preventDefault(); onclickhandle(author.handle, author.href); }}>
 				<Avatar src={author.avatar} class={avatarClass} />
-			</button>
+			</a>
 		{:else}
 			<a href={author.href} {target} class="shrink-0">
 				<Avatar src={author.avatar} class={avatarClass} />
@@ -39,9 +40,10 @@
 		<div class="mb-1 flex min-w-0 items-center justify-between gap-2 overflow-hidden">
 			<div class="flex min-w-0 shrink items-center gap-2 overflow-hidden">
 				{#if onclickhandle}
-					<button
-						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 cursor-pointer flex-col items-baseline gap-x-2 gap-y-0.5 overflow-hidden rounded-xl px-2 py-0.5 sm:flex-row"
-						onclick={() => onclickhandle(author.handle, author.href)}
+					<a
+						href={handleHref?.(author.handle) ?? author.href}
+						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 flex-col items-baseline gap-x-2 gap-y-0.5 overflow-hidden rounded-xl px-2 py-0.5 no-underline sm:flex-row"
+						onclick={(e) => { e.preventDefault(); onclickhandle(author.handle, author.href); }}
 					>
 						{#if author.displayName}
 							<div
@@ -60,7 +62,7 @@
 						>
 							@{author.handle}
 						</div>
-					</button>
+					</a>
 				{:else if author.href}
 					<a
 						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 flex-col items-baseline gap-x-2 gap-y-0.5 overflow-hidden rounded-xl px-2 py-0.5 sm:flex-row"

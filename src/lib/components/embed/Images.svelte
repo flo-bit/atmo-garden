@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { EmbedImageData } from './types';
 	import Image from './Image.svelte';
+	import { openLightbox } from './ImageLightbox.svelte';
 
 	const {
 		data,
@@ -25,11 +26,11 @@
 		Sensitive content, click to show.
 	</button>
 {:else if data.images.length === 1}
-	<Image image={data.images[0]} onclick={data.onclick} />
+	<Image image={data.images[0]} onclick={() => openLightbox(data.images, 0)} />
 {:else}
 	<div class="columns-2 gap-4">
-		{#each data.images as image (image.thumb)}
-			<Image {image} onclick={data.onclick} class="mb-4" />
+		{#each data.images as image, i (image.thumb)}
+			<Image {image} onclick={() => openLightbox(data.images, i)} class="mb-4" />
 		{/each}
 	</div>
 {/if}

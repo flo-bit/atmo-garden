@@ -9,7 +9,9 @@
 	import type { PostData } from '$lib/components';
 	import { ArrowLeft, Loader2 } from '@lucide/svelte';
 	import { likePost, unlikePost, getPostThread } from '$lib/atproto/server/feed.remote';
-	import { getCachedPost, getCachedThread } from '$lib/cache.svelte';
+	import { getCachedPost, getCachedThread, getThreadAge } from '$lib/cache.svelte';
+	import { threadStore } from '$lib/db.svelte';
+	import { wireEmbedClicks } from '$lib/components/embed';
 
 	let loading = $state(true);
 	let loadingComments = $state(true);
@@ -100,8 +102,9 @@
 			const did = await actorToDid(page.params.actor);
 			const uri = `at://${did}/app.bsky.feed.post/${page.params.rkey}`;
 
-			// Check thread cache first (prefetched from feed)
-			const cachedThread = getCachedThread(uri);
+			// Show cached data instantly
+			let needsFetch = true;
+			const cachedThread = await getCachedThread(uri);
 			if (cachedThread) {
 				postView = cachedThread.post;
 				loading = false;
@@ -110,15 +113,18 @@
 					comments = threadToComments(cachedThread.replies as any[]);
 				}
 				loadingComments = false;
-				return;
+				// Skip refetch if cache is fresh (< 30s)
+				const age = await getThreadAge(uri);
+				if (age !== undefined && age < 30_000) needsFetch = false;
+			} else {
+				const cached = await getCachedPost(uri);
+				if (cached) {
+					postView = cached;
+					loading = false;
+				}
 			}
 
-			// Fall back to post cache for instant post display
-			const cached = getCachedPost(uri);
-			if (cached) {
-				postView = cached;
-				loading = false;
-			}
+			if (!needsFetch) return;
 
 			// Fetch full thread (authenticated if logged in, for viewer state)
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -130,6 +136,7 @@
 			}
 
 			postView = data.thread.post;
+			threadStore.set(uri, data.thread).catch(() => {});
 
 			if (data.thread.replies?.length) {
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -170,8 +177,9 @@
 			<div class="px-4 sm:px-0">
 				<Post
 					data={postData}
-					{embeds}
+					embeds={wireEmbedClicks(embeds, (handle, rkey) => goto(`/p/${handle}/post/${rkey}`), (handle) => goto(`/p/${handle}`))}
 					onclickhandle={handleClickHandle}
+					handleHref={(handle) => `/p/${handle}`}
 					actions={user.did
 						? {
 								reply: { count: postData.replyCount },

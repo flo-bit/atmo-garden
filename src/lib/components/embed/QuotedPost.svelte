@@ -5,7 +5,7 @@
 
 	const {
 		record,
-		showEmbed = false
+		showEmbed = true
 	}: {
 		record: EmbedRecordData;
 		showEmbed?: boolean;
@@ -24,9 +24,13 @@
 </script>
 
 {#if record.onclick}
-	<button
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div
 		class="border-base-300 dark:border-base-600/30 accent:border-accent-300/20 accent:bg-accent-100/10 bg-base-500/10 dark:bg-black/30 hover:bg-base-500/15 dark:hover:bg-black/40 w-full cursor-pointer overflow-hidden rounded-2xl border p-3 text-left text-sm transition-colors"
-		onclick={() => record.onclick!(record, record.href)}
+		onclick={(e) => {
+			if ((e.target as HTMLElement).closest('a, button')) return;
+			record.onclick!(record, record.href);
+		}}
 	>
 		<Post
 			data={postData}
@@ -34,8 +38,9 @@
 			showAvatar={false}
 			{embeds}
 			onclickhandle={record.onclickhandle}
+			handleHref={record.handleHref}
 		/>
-	</button>
+	</div>
 {:else}
 	<div
 		class="border-base-300 dark:border-base-600/30 accent:border-accent-300/20 accent:bg-accent-100/10 bg-base-500/10 dark:bg-black/30 overflow-hidden rounded-2xl border p-3 text-sm"
@@ -46,6 +51,7 @@
 			showAvatar={false}
 			{embeds}
 			onclickhandle={record.onclickhandle}
+			handleHref={record.handleHref}
 		/>
 	</div>
 {/if}

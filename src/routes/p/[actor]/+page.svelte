@@ -20,7 +20,7 @@
 		const actor = page.params.actor;
 
 		// Show cached profile instantly
-		const cached = getCachedProfile(actor);
+		const cached = await getCachedProfile(actor);
 		if (cached) {
 			profile = cached;
 			loading = false;

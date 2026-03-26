@@ -27,10 +27,17 @@ svelte bsky client, wip
 ## posts
 
 - show some link embeds as their own thing (e.g. youtube, tenor)
-- max height for embeds
-- show embeds in quoted posts (except second level quotes?)
-- allow clicking on videos and images (play/show in fullscreen)
+- show fullscreen images on click
 - fix handles (space between avatar and handle sometimes)
 - make everything tighter
 - add action to reply button and repost/quote button
 - limit title in external embed to 2 lines 
+
+## notifications
+
+- combine multiple notifications
+- show posts inline
+
+## settings
+
+- allow setting theme (auto/dark/light) and theme colors (base and accent color)

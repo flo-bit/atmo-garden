@@ -64,7 +64,7 @@
 		const allConvos = [...convoCache.acceptedConvos, ...convoCache.requestConvos];
 		convo = allConvos.find((c) => c.id === convoId) ?? null;
 
-		const cached = getCachedMessages(convoId);
+		const cached = await getCachedMessages(convoId);
 		if (cached) {
 			messages = cached;
 			loading = false;

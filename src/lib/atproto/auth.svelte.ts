@@ -70,6 +70,14 @@ export async function logout() {
 		console.error('Error logging out:', e);
 	}
 
+	// Clear user-specific cached data
+	try {
+		const { stateStore, messageStore } = await import('$lib/db.svelte');
+		await Promise.all([stateStore.clear(), messageStore.clear()]);
+	} catch {
+		// ignore
+	}
+
 	// Full reload to clear server session state
 	window.location.href = '/';
 }

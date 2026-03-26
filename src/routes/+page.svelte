@@ -6,7 +6,8 @@
 	import { Post } from '$lib/components';
 	import { Loader2 } from '@lucide/svelte';
 	import { loadFeed, likePost, unlikePost } from '$lib/atproto/server/feed.remote';
-	import { cachePost, prefetchThread, feedCache, prefetchNotifications, setFeedUri } from '$lib/cache.svelte';
+	import { cachePosts, prefetchThread, feedCache, prefetchNotifications, setFeedUri } from '$lib/cache.svelte';
+	import { wireEmbedClicks } from '$lib/components/embed';
 
 	const LOGGED_IN_FEED = 'at://did:plc:3guzzweuqraryl3rdkimjamk/app.bsky.feed.generator/for-you';
 	const PUBLIC_FEED = 'at://did:plc:w4xbfzo7kqfes5zb7r6qv3rw/app.bsky.feed.generator/blacksky-trend';
@@ -18,12 +19,10 @@
 	let loading = $derived(!feedCache.loaded);
 	let loadingMore = $state(false);
 
-	function cachePosts(posts: any[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+	function cacheAndPrefetch(posts: any[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+		cachePosts(posts);
 		for (const fp of posts) {
-			if (fp.post) {
-				cachePost(fp.post);
-				prefetchThread(fp.post.uri);
-			}
+			if (fp.post) prefetchThread(fp.post.uri);
 		}
 	}
 
@@ -31,7 +30,7 @@
 		try {
 			const result = await loadFeed({ feedUri });
 			feedCache.posts = JSON.parse(JSON.stringify(result.posts));
-			cachePosts(feedCache.posts);
+			cacheAndPrefetch(feedCache.posts);
 			feedCache.cursor = result.cursor;
 			feedCache.loaded = true;
 		} catch (e) {
@@ -69,7 +68,7 @@
 				cursor: feedCache.cursor
 			});
 			const newPosts = JSON.parse(JSON.stringify(result.posts));
-			cachePosts(newPosts);
+			cacheAndPrefetch(newPosts);
 			feedCache.posts = [...feedCache.posts, ...newPosts];
 			feedCache.cursor = result.cursor;
 		} catch (e) {
@@ -146,16 +145,11 @@
 						<p class="text-base-500 dark:text-base-400">No posts</p>
 					</div>
 				{:else}
-					<div class="divide-base-200 dark:divide-base-800 divide-y">
+					<div>
 						{#each feedCache.posts as feedPost, i (feedPost.post?.uri ? `${feedPost.post.uri}-${i}` : i)}
 							{#if feedPost.post}
 								{@const { postData, embeds } = blueskyPostToPostData(feedPost.post, 'https://bsky.app', feedPost.reason, feedPost.reply)}
-								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-							<div
-								class="px-4 py-4 cursor-pointer sm:px-0"
-								onmousedown={(e) => {
-									if (e.button !== 0) return;
-									if ((e.target as HTMLElement).closest('a, button')) return;
+								{@const postHref = (() => {
 									// eslint-disable-next-line @typescript-eslint/no-explicit-any
 									const record = feedPost.post.record as any;
 									const isReply = !!record?.reply?.root;
@@ -163,18 +157,22 @@
 										const rootUri = record.reply.root.uri as string;
 										const [, , rootDid, , rootRkey] = rootUri.split('/');
 										const clickedRkey = feedPost.post.uri.split('/').pop();
-										goto(`/p/${rootDid}/post/${rootRkey}?highlight=${feedPost.post.author.handle}/${clickedRkey}`);
+										return `/p/${rootDid}/post/${rootRkey}?highlight=${feedPost.post.author.handle}/${clickedRkey}`;
 									} else {
 										const rkey = feedPost.post.uri.split('/').pop();
-										goto(`/p/${feedPost.post.author.handle}/post/${rkey}`);
+										return `/p/${feedPost.post.author.handle}/post/${rkey}`;
 									}
-								}}
+								})()}
+								<div
+								class="-mx-2 px-6 pt-3 pb-2 sm:px-2 rounded-xl hover:bg-base-100/50 dark:hover:bg-base-800/30 transition-colors"
 							>
 									<Post
 									compact={true}
 										data={postData}
-										{embeds}
+										embeds={wireEmbedClicks(embeds, (handle, rkey) => goto(`/p/${handle}/post/${rkey}`), (handle) => goto(`/p/${handle}`))}
+										href={postHref}
 										onclickhandle={(handle) => goto(`/p/${handle}`)}
+										handleHref={(handle) => `/p/${handle}`}
 										actions={user.did
 											? {
 													reply: {
@@ -202,6 +200,9 @@
 												}}
 									/>
 								</div>
+								{#if i < feedCache.posts.length - 1}
+									<hr class="border-base-200 dark:border-base-800 mx-4 sm:mx-0" />
+								{/if}
 							{/if}
 						{/each}
 					</div>

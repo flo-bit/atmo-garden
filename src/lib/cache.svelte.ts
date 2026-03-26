@@ -1,81 +1,95 @@
 /**
- * Unified client-side cache for the app.
- * Persists across navigations within the same session.
+ * Reactive caches for feed, chat, and notifications.
+ * Post/profile/identity persistence is handled by $lib/db.svelte.ts (Dexie).
+ * Bulk reactive state (feed list, convo list, notifications) is persisted via the state store.
  */
 
+import { browser } from '$app/environment';
 import type { ChatBskyConvoDefs } from '@atcute/bluesky';
 import type { AppBskyNotificationListNotifications } from '@atcute/bluesky';
 import { getPostThread, loadFeed } from '$lib/atproto/server/feed.remote';
 import { listConvos, getMessages } from '$lib/atproto/server/chat.remote';
 import { listNotifications, getUnreadCount } from '$lib/atproto/server/notifications.remote';
+import {
+	postStore,
+	threadStore,
+	profileStore,
+	messageStore,
+	stateStore,
+	cachePost,
+	cachePosts,
+	cacheProfile
+} from '$lib/db.svelte';
 
 type ConvoView = ChatBskyConvoDefs.ConvoView;
 type Notification = AppBskyNotificationListNotifications.Notification;
 
-// ---------------------------------------------------------------------------
-// Identity: handle <-> DID resolution cache
-// ---------------------------------------------------------------------------
-
-export const identityCache = new Map<string, string>();
+// Re-export db helpers so existing imports still work
+export { cachePost, cachePosts, cacheProfile };
 
 // ---------------------------------------------------------------------------
-// Profiles: actor (handle or DID) -> profile data
+// State persistence helpers
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _profiles = new Map<string, any>();
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function cacheProfile(profile: any) {
-	if (profile?.handle) _profiles.set(profile.handle, profile);
-	if (profile?.did) _profiles.set(profile.did, profile);
-	if (profile?.handle && profile?.did) {
-		identityCache.set(profile.handle, profile.did);
-	}
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getCachedProfile(actor: string): any | undefined {
-	return _profiles.get(actor);
+function saveState(key: string, value: any) {
+	stateStore.set(key, value).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
-// Posts: URI -> post view, URI -> thread
+// Profiles (async wrappers around db)
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _posts = new Map<string, any>();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _threads = new Map<string, any>();
+export async function getCachedProfile(actor: string): Promise<any | undefined> {
+	return profileStore.get(actor);
+}
+
+// ---------------------------------------------------------------------------
+// Posts & Threads (async wrappers around db)
+// ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function cachePost(post: any) {
-	if (!post?.uri) return;
-	_posts.set(post.uri, post);
-	if (post.author) cacheProfile(post.author);
+export async function getCachedPost(uri: string): Promise<any | undefined> {
+	return postStore.get(uri);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getCachedPost(uri: string): any | undefined {
-	return _posts.get(uri);
+export async function getCachedThread(uri: string): Promise<any | undefined> {
+	return threadStore.get(uri);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getCachedThread(uri: string): any | undefined {
-	return _threads.get(uri);
+export async function getThreadAge(uri: string): Promise<number | undefined> {
+	return threadStore.getAge(uri);
 }
 
 export function prefetchThread(uri: string) {
-	if (_threads.has(uri)) return;
-	getPostThread({ uri })
-		.then((data) => {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			if ((data as any).thread?.$type === 'app.bsky.feed.defs#threadViewPost') {
+	threadStore.get(uri).then((cached) => {
+		if (cached) return;
+		getPostThread({ uri })
+			.then((data) => {
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				_threads.set(uri, (data as any).thread);
-			}
-		})
-		.catch(() => {});
+				const thread = (data as any).thread;
+				if (thread?.$type === 'app.bsky.feed.defs#threadViewPost') {
+					threadStore.set(uri, thread).catch(() => {});
+				}
+			})
+			.catch(() => {});
+	}).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Messages (async wrappers around db)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getCachedMessages(convoId: string): Promise<any[] | undefined> {
+	return messageStore.get(convoId);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function setCachedMessages(convoId: string, messages: any[]) {
+	await messageStore.set(convoId, messages);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +104,7 @@ let _feedScrollY = $state(0);
 
 export const feedCache = {
 	get posts() { return _feedPosts; },
-	set posts(v) { _feedPosts = v; },
+	set posts(v) { _feedPosts = v; saveState('feed', { posts: v, cursor: _feedCursor }); },
 	get cursor() { return _feedCursor; },
 	set cursor(v) { _feedCursor = v; },
 	get loaded() { return _feedLoaded; },
@@ -116,16 +130,13 @@ export function setFeedUri(uri: string) {
 
 async function pollFeed() {
 	if (!_feedUri) return;
-	console.log('[poll] refreshing feed');
+	console.log('[poll] feed');
 	try {
 		const result = await loadFeed({ feedUri: _feedUri });
 		_pendingFeedPosts = JSON.parse(JSON.stringify(result.posts));
 		_pendingFeedCursor = result.cursor;
 		_hasPendingFeed = true;
-		// Cache post authors for instant profile/DID resolution
-		for (const fp of _pendingFeedPosts) {
-			if (fp.post) cachePost(fp.post);
-		}
+		cachePosts(_pendingFeedPosts);
 	} catch {
 		// silent
 	}
@@ -138,6 +149,10 @@ export function applyPendingFeed() {
 	_feedLoaded = true;
 	_feedScrollY = 0;
 	_hasPendingFeed = false;
+	saveState('feed', { posts: _feedPosts, cursor: _feedCursor });
+	for (const fp of _feedPosts) {
+		if (fp.post) prefetchThread(fp.post.uri);
+	}
 }
 
 export function startFeedPoll() {
@@ -153,7 +168,7 @@ export function stopFeedPoll() {
 }
 
 // ---------------------------------------------------------------------------
-// Chat: reactive convo list + per-convo message cache
+// Chat: reactive convo list
 // ---------------------------------------------------------------------------
 
 let _acceptedConvos = $state<ConvoView[]>([]);
@@ -162,34 +177,12 @@ let _convoListLoaded = $state(false);
 
 export const convoCache = {
 	get acceptedConvos() { return _acceptedConvos; },
-	set acceptedConvos(v) { _acceptedConvos = v; },
+	set acceptedConvos(v) { _acceptedConvos = v; saveState('convos', { accepted: v, requests: _requestConvos }); },
 	get requestConvos() { return _requestConvos; },
-	set requestConvos(v) { _requestConvos = v; },
+	set requestConvos(v) { _requestConvos = v; saveState('convos', { accepted: _acceptedConvos, requests: v }); },
 	get loaded() { return _convoListLoaded; },
 	set loaded(v) { _convoListLoaded = v; }
 };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _messages = new Map<string, any[]>();
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function getCachedMessages(convoId: string): any[] | undefined {
-	return _messages.get(convoId);
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function setCachedMessages(convoId: string, messages: any[]) {
-	_messages.set(convoId, messages);
-}
-
-export function markConvoRead(convoId: string) {
-	const convo = _acceptedConvos.find((c) => c.id === convoId);
-	if (convo && convo.unreadCount > 0) {
-		convo.unreadCount = 0;
-		_acceptedConvos = [..._acceptedConvos]; // trigger reactivity
-		updateChatUnreadCount();
-	}
-}
 
 let _chatPrefetching = false;
 let _chatPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -205,8 +198,17 @@ function updateChatUnreadCount() {
 	_unreadChatCount = _acceptedConvos.reduce((sum, c) => sum + (c.unreadCount ?? 0), 0);
 }
 
+export function markConvoRead(convoId: string) {
+	const convo = _acceptedConvos.find((c) => c.id === convoId);
+	if (convo && convo.unreadCount > 0) {
+		convo.unreadCount = 0;
+		_acceptedConvos = [..._acceptedConvos];
+		updateChatUnreadCount();
+	}
+}
+
 async function pollChats() {
-	console.log('[poll] refreshing chats');
+	console.log('[poll] chats');
 	try {
 		const [accepted, requests] = await Promise.all([
 			listConvos({ status: 'accepted' }),
@@ -216,6 +218,7 @@ async function pollChats() {
 		_requestConvos = requests.convos as ConvoView[];
 		_convoListLoaded = true;
 		updateChatUnreadCount();
+		saveState('convos', { accepted: _acceptedConvos, requests: _requestConvos });
 	} catch {
 		// silent
 	}
@@ -246,12 +249,14 @@ export async function prefetchChats() {
 		_requestConvos = requests.convos as ConvoView[];
 		_convoListLoaded = true;
 		updateChatUnreadCount();
+		saveState('convos', { accepted: _acceptedConvos, requests: _requestConvos });
 
 		// Prefetch messages for top 10 accepted convos
 		for (const convo of _acceptedConvos.slice(0, 10)) {
-			if (_messages.has(convo.id)) continue;
+			const cached = await getCachedMessages(convo.id);
+			if (cached) continue;
 			getMessages({ convoId: convo.id })
-				.then((res) => _messages.set(convo.id, res.messages))
+				.then((res) => setCachedMessages(convo.id, res.messages))
 				.catch(() => {});
 		}
 	} catch {
@@ -273,7 +278,7 @@ let _seenAt = $state<string | null>(null);
 
 export const notificationsCache = {
 	get notifications() { return _notifications; },
-	set notifications(v) { _notifications = v; },
+	set notifications(v) { _notifications = v; saveState('notifications', { notifications: v, cursor: _notifCursor, seenAt: _seenAt }); },
 	get loaded() { return _notifLoaded; },
 	set loaded(v) { _notifLoaded = v; },
 	get unreadCount() { return _unreadCount; },
@@ -288,7 +293,7 @@ let _notifPrefetching = false;
 let _pollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function pollUnread() {
-	console.log('[poll] refreshing notification count');
+	console.log('[poll] notifications');
 	try {
 		const result = await getUnreadCount({});
 		_unreadCount = result.count;
@@ -323,9 +328,48 @@ export async function prefetchNotifications() {
 		_seenAt = notifResult.seenAt;
 		_unreadCount = countResult.count;
 		_notifLoaded = true;
+		saveState('notifications', { notifications: _notifications, cursor: _notifCursor, seenAt: _seenAt });
 	} catch {
 		// silent fail
 	} finally {
 		_notifPrefetching = false;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hydrate: restore reactive state from Dexie on app start
+// ---------------------------------------------------------------------------
+
+export async function hydrateFromDb() {
+	if (!browser) return;
+
+	try {
+		const [feedState, convosState, notifState] = await Promise.all([
+			stateStore.get('feed'),
+			stateStore.get('convos'),
+			stateStore.get('notifications')
+		]);
+
+		if (feedState?.posts?.length) {
+			_feedPosts = feedState.posts;
+			_feedCursor = feedState.cursor ?? null;
+			_feedLoaded = true;
+		}
+
+		if (convosState?.accepted?.length || convosState?.requests?.length) {
+			_acceptedConvos = convosState.accepted ?? [];
+			_requestConvos = convosState.requests ?? [];
+			_convoListLoaded = true;
+			updateChatUnreadCount();
+		}
+
+		if (notifState?.notifications?.length) {
+			_notifications = notifState.notifications;
+			_notifCursor = notifState.cursor ?? null;
+			_seenAt = notifState.seenAt ?? null;
+			_notifLoaded = true;
+		}
+	} catch (e) {
+		console.warn('[cache] Failed to hydrate from db:', e);
 	}
 }

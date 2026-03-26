@@ -40,18 +40,16 @@ export async function resolveHandle({ handle }: { handle: Handle }) {
 	return data;
 }
 
-import { identityCache } from '$lib/cache.svelte';
+import { getDid } from '$lib/db.svelte';
 
 /**
  * Returns a DID given a handle or DID string.
  */
 export async function actorToDid(actor: string): Promise<Did> {
-	if (isDid(actor)) return actor;
-	const cached = identityCache.get(actor);
-	if (cached) return cached as Did;
-	const did = await resolveHandle({ handle: actor as Handle });
-	identityCache.set(actor, did);
-	return did;
+	return getDid(actor, async (handle) => {
+		const did = await resolveHandle({ handle: handle as Handle });
+		return did;
+	});
 }
 
 const didResolver = new CompositeDidDocumentResolver({

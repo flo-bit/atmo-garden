@@ -109,8 +109,8 @@
 
 	onMount(async () => {
 		try {
-			const did = await actorToDid(page.params.handle);
-			const uri = `at://${did}/app.bsky.feed.post/${page.params.rkey}`;
+			const did = await actorToDid(page.params.handle ?? '');
+			const uri = `at://${did}/app.bsky.feed.post/${page.params.rkey ?? ''}`;
 			postUri = uri;
 
 			// Show cached data instantly

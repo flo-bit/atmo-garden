@@ -48,6 +48,7 @@ export const updateSeen = command(
 		if (!locals.client || !locals.did) error(401, 'Not authenticated');
 
 		const res = await locals.client.post('app.bsky.notification.updateSeen', {
+			as: null,
 			input: {
 				seenAt: new Date().toISOString()
 			}

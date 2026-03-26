@@ -14,17 +14,17 @@
 
 	import { UserPlus, UserCheck } from '@lucide/svelte';
 
+	let loading = $state(true);
+	let error = $state<string | null>(null);
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let profile = $state<any>(null);
+
 	let isOwnProfile = $derived(user.did && profile?.did === user.did);
 	let followUri = $state<string | null>(null);
 	let isFollowing = $derived(followUri !== null);
 	let followsMe = $state(false);
 	let isMutual = $derived(isFollowing && followsMe);
 	let followLoading = $state(false);
-
-	let loading = $state(true);
-	let error = $state<string | null>(null);
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let profile = $state<any>(null);
 
 	// Posts state
 	let feedItems = $state<FeedItem[]>([]);
@@ -137,7 +137,7 @@
 		loadingMore = true;
 		try {
 			const result = await getAuthorFeed({
-				actor: page.params.handle,
+				actor: page.params.handle ?? '',
 				cursor: postsCursor
 			});
 			const newItems = ingestFeedPosts(result.posts);

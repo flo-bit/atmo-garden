@@ -42,19 +42,19 @@
 				{#if onclickhandle}
 					<a
 						href={handleHref?.(author.handle) ?? author.href}
-						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 flex-col items-baseline gap-x-2 gap-y-0.5 overflow-hidden rounded-xl px-2 py-0.5 no-underline sm:flex-row"
+						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 flex-row items-baseline gap-x-2 overflow-hidden rounded-xl px-2 py-0.5 no-underline"
 						onclick={(e) => { e.preventDefault(); onclickhandle(author.handle, author.href); }}
 					>
 						{#if author.displayName}
 							<div
-								class="text-base-900 group-hover/post-author:text-accent-600 dark:text-base-50 dark:group-hover/post-author:text-accent-300 accent:group-hover/post-author:text-accent-950 line-clamp-1 text-sm leading-tight font-semibold"
+								class="text-base-900 group-hover/post-author:text-accent-600 dark:text-base-50 dark:group-hover/post-author:text-accent-300 accent:group-hover/post-author:text-accent-950 shrink truncate text-sm leading-tight font-semibold"
 							>
 								{author.displayName}
 							</div>
 						{/if}
 						<div
 							class={cn(
-								'group-hover/post-author:text-accent-600 dark:group-hover/post-author:text-accent-400 accent:text-accent-950 accent:group-hover/post-author:text-accent-900 line-clamp-1 text-sm',
+								'group-hover/post-author:text-accent-600 dark:group-hover/post-author:text-accent-400 accent:text-accent-950 accent:group-hover/post-author:text-accent-900 truncate text-sm',
 								!author.displayName
 									? 'text-base-900 dark:text-base-50 font-semibold'
 									: 'text-base-600 dark:text-base-400'
@@ -65,20 +65,20 @@
 					</a>
 				{:else if author.href}
 					<a
-						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 flex-col items-baseline gap-x-2 gap-y-0.5 overflow-hidden rounded-xl px-2 py-0.5 sm:flex-row"
+						class="hover:bg-accent-900/5 accent:hover:bg-accent-100/10 group/post-author -mx-2 -my-0.5 flex min-w-0 flex-row items-baseline gap-x-2 overflow-hidden rounded-xl px-2 py-0.5"
 						href={author.href}
 						{target}
 					>
 						{#if author.displayName}
 							<div
-								class="text-base-900 group-hover/post-author:text-accent-600 dark:text-base-50 dark:group-hover/post-author:text-accent-300 accent:group-hover/post-author:text-accent-950 line-clamp-1 text-sm leading-tight font-semibold"
+								class="text-base-900 group-hover/post-author:text-accent-600 dark:text-base-50 dark:group-hover/post-author:text-accent-300 accent:group-hover/post-author:text-accent-950 shrink truncate text-sm leading-tight font-semibold"
 							>
 								{author.displayName}
 							</div>
 						{/if}
 						<div
 							class={cn(
-								'group-hover/post-author:text-accent-600 dark:group-hover/post-author:text-accent-400 accent:text-accent-950 accent:group-hover/post-author:text-accent-900 line-clamp-1 text-sm',
+								'group-hover/post-author:text-accent-600 dark:group-hover/post-author:text-accent-400 accent:text-accent-950 accent:group-hover/post-author:text-accent-900 truncate text-sm',
 								!author.displayName
 									? 'text-base-900 dark:text-base-50 font-semibold'
 									: 'text-base-600 dark:text-base-400'
@@ -89,12 +89,12 @@
 					</a>
 				{:else}
 					<div
-						class="-mx-2 -my-0.5 flex min-w-0 flex-col items-baseline gap-x-2 gap-y-0.5 overflow-hidden rounded-xl px-2 py-0.5 sm:flex-row"
+						class="-mx-2 -my-0.5 flex min-w-0 flex-row items-baseline gap-x-2 overflow-hidden rounded-xl px-2 py-0.5"
 					>
-						<div class="text-base-900 dark:text-base-50 text-sm leading-tight font-semibold">
+						<div class="text-base-900 dark:text-base-50 shrink truncate text-sm leading-tight font-semibold">
 							{author.displayName}
 						</div>
-						<div class="text-base-600 dark:text-base-400 accent:text-accent-950 line-clamp-1 text-sm">
+						<div class="text-base-600 dark:text-base-400 accent:text-accent-950 truncate text-sm">
 							@{author.handle}
 						</div>
 					</div>

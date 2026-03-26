@@ -119,7 +119,7 @@
 		{#if user.did}
 			<div class="border-base-300/50 dark:border-base-600/20 border-t px-4 py-2.5">
 				<Button
-					variant={isRsvpd ? 'outline' : 'default'}
+					variant={isRsvpd ? 'secondary' : 'primary'}
 					size="sm"
 					onclick={toggleRsvp}
 					disabled={rsvpLoading}

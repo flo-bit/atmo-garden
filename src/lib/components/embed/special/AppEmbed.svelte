@@ -3,7 +3,9 @@
 	import type { EmbedAppConfig } from './embed-registry';
 	import IframeEmbed from './IframeEmbed.svelte';
 
-	const { data, config }: { data: EmbedExternalData; config: EmbedAppConfig } = $props();
+	const { data, config }: { data: EmbedExternalData; config?: EmbedAppConfig } = $props();
 </script>
 
-<IframeEmbed {config} url={data.external.href} />
+{#if config}
+	<IframeEmbed {config} url={data.external.href} />
+{/if}

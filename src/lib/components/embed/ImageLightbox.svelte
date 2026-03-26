@@ -1,9 +1,9 @@
-<script module>
+<script module lang="ts">
 	import type { ImageData } from './types';
 
-	export const lightboxState = $state({ open: false, images: /** @type {ImageData[]} */ ([]), index: 0 });
+	export const lightboxState = $state<{ open: boolean; images: ImageData[]; index: number }>({ open: false, images: [], index: 0 });
 
-	export function openLightbox(images, index = 0) {
+	export function openLightbox(images: ImageData[], index = 0) {
 		lightboxState.images = images;
 		lightboxState.index = index;
 		lightboxState.open = true;

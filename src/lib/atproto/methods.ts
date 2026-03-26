@@ -36,7 +36,7 @@ export async function resolveHandle({ handle }: { handle: Handle }): Promise<Did
 		url.searchParams.set('identifier', handle);
 		const res = await fetch(url);
 		if (res.ok) {
-			const data = await res.json();
+			const data = await res.json() as { did?: string };
 			if (data.did) return data.did as Did;
 		}
 	} catch {

@@ -26,7 +26,7 @@
 		hashtag: (tag) => `/hashtag/${tag}`
 	});
 
-	let convoId = $derived(page.params.convoId);
+	let convoId = $derived(page.params.convoId ?? '');
 
 	let loading = $state(true);
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any

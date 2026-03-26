@@ -25,6 +25,11 @@ svelte bsky client, wip
 - add post creator
 - add keyboard bindings (e.g. j/k to navigate, enter to open post, r to reply, etc)
 
+## search
+
+- allow searching your bookmarks, likes, posts, reposts, etc
+- advanced search (e.g. filter by author, etc)
+
 ## posts
 
 - show some link embeds as their own thing (e.g. youtube, tenor)
@@ -45,3 +50,8 @@ svelte bsky client, wip
 ## bugs
 
 - fix feed flashing sometimes
+
+## chat
+
+- send new messages
+- dont show badge for read message requests

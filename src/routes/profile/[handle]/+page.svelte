@@ -1,19 +1,17 @@
 <script lang="ts">
-	import { onMount, onDestroy, untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { UserProfile, Post } from '$lib/components';
-	import { blueskyPostToPostData } from '$lib/components';
+	import { UserProfile } from '$lib/components';
 	import { Button } from '@foxui/core';
 	import { Loader2, LogOut } from '@lucide/svelte';
 	import { user, logout } from '$lib/atproto/auth.svelte';
 	import { actorToDid, getDetailedProfile } from '$lib/atproto/methods';
-	import { getCachedProfile, cacheProfile, prefetchThread, ingestFeedPosts, postMap } from '$lib/cache.svelte';
+	import { getCachedProfile, cacheProfile, prefetchThread, ingestFeedPosts } from '$lib/cache.svelte';
 	import { getAuthorFeed, followUser, unfollowUser } from '$lib/atproto/server/feed.remote';
-	import { wireEmbedClicks } from '$lib/components/embed';
-	import { isLiked, isBookmarked, getLikeCount, toggleLike, toggleBookmark } from '$lib/actions.svelte';
 	import { Client, simpleFetchHandler } from '@atcute/client';
 	import type { FeedItem } from '$lib/cache.svelte';
+	import ScrollablePostList, { getCachedList, setCachedList } from '$lib/components/ScrollablePostList.svelte';
 
 	import { UserPlus, UserCheck } from '@lucide/svelte';
 
@@ -57,25 +55,43 @@
 		return `${(n / 1_000_000).toFixed(1)}m`;
 	}
 
+	let listKey = $derived(`profile-${page.params.handle}`);
+
 	async function loadProfile(actor: string) {
-		loading = true;
 		error = null;
-		profile = null;
-		feedItems = [];
-		postsCursor = null;
-		postsLoading = true;
 		followUri = null;
 
-		// Show cached profile instantly
-		const cached = await getCachedProfile(actor);
+		const key = `profile-${actor}`;
+
+		// Resolve DID for API calls
+		const did = await actorToDid(actor);
+
+		// Restore from caches first for instant display
+		const [cached, cachedList] = await Promise.all([
+			getCachedProfile(actor),
+			getCachedList(key)
+		]);
+
 		if (cached) {
 			profile = cached;
 			loading = false;
+		} else {
+			profile = null;
+			loading = true;
 		}
 
-		// Always fetch full profile
+		if (cachedList) {
+			feedItems = cachedList.items as FeedItem[];
+			postsCursor = cachedList.cursor;
+			postsLoading = false;
+		} else {
+			feedItems = [];
+			postsCursor = null;
+			postsLoading = true;
+		}
+
+		// Fetch fresh profile
 		try {
-			const did = await actorToDid(actor);
 			const client = new Client({
 				handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
 			});
@@ -94,12 +110,16 @@
 			loading = false;
 		}
 
-		// Load author posts
+		// Fetch fresh posts
 		try {
 			const result = await getAuthorFeed({ actor });
-			feedItems = ingestFeedPosts(result.posts);
-			for (const item of feedItems) prefetchThread(item.uri);
-			postsCursor = result.cursor;
+			const freshItems = ingestFeedPosts(result.posts);
+			for (const item of freshItems) prefetchThread(item.uri);
+			if (!cachedList) {
+				feedItems = freshItems;
+				postsCursor = result.cursor;
+			}
+			setCachedList(key, freshItems, result.cursor);
 		} catch (e) {
 			console.error('Failed to load author feed:', e);
 		} finally {
@@ -124,6 +144,7 @@
 			for (const item of newItems) prefetchThread(item.uri);
 			feedItems = [...feedItems, ...newItems];
 			postsCursor = result.cursor;
+			setCachedList(listKey, feedItems, postsCursor);
 		} catch (e) {
 			console.error('Failed to load more:', e);
 		} finally {
@@ -131,21 +152,9 @@
 		}
 	}
 
-	function handleScroll() {
-		if (loadingMore || !postsCursor) return;
-		const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
-		if (scrollHeight - scrollTop - clientHeight < 2000) {
-			loadMore();
-		}
-	}
-
-	onMount(() => window.addEventListener('scroll', handleScroll));
-	onDestroy(() => {
-		if (typeof window !== 'undefined') window.removeEventListener('scroll', handleScroll);
-	});
 </script>
 
-<div class="flex h-dvh flex-col">
+<div>
 	<div class="mx-auto w-full max-w-xl flex-1">
 		{#if loading}
 			<div class="flex items-center justify-center py-12">
@@ -202,70 +211,15 @@
 				</div>
 			</UserProfile>
 
-			<!-- Author posts -->
-			{#if postsLoading}
-				<div class="flex items-center justify-center py-8">
-					<Loader2 class="text-base-400 animate-spin" size={24} />
-				</div>
-			{:else if feedItems.length > 0}
-				<div>
-					{#each feedItems as feedItem, i (feedItem.uri + '-' + i)}
-						{@const post = postMap.get(feedItem.uri)}
-						{#if post}
-							{@const { postData, embeds } = blueskyPostToPostData(post, 'https://bsky.app', feedItem.reason)}
-							{@const postHref = `/profile/${post.author.handle}/post/${post.uri.split('/').pop()}`}
-							<div
-								class="-mx-2 px-6 pt-3 pb-2 sm:px-2 rounded-xl hover:bg-base-100/50 dark:hover:bg-base-800/30 transition-colors"
-							>
-								<Post
-									compact={true}
-									data={postData}
-									embeds={wireEmbedClicks(embeds, (handle, rkey) => goto(`/profile/${handle}/post/${rkey}`), (handle) => goto(`/profile/${handle}`))}
-									href={postHref}
-									onclickhandle={(handle) => goto(`/profile/${handle}`)}
-									handleHref={(handle) => `/profile/${handle}`}
-									actions={user.did
-										? {
-												reply: { count: postData.replyCount },
-												repost: { count: postData.repostCount },
-												like: {
-													count: getLikeCount(post.uri),
-													active: isLiked(post.uri),
-													onclick: () => toggleLike(post.uri, post.cid)
-												},
-												bookmark: {
-													active: isBookmarked(post.uri),
-													onclick: () => toggleBookmark(post.uri, post.cid)
-												}
-											}
-										: {
-												reply: { count: postData.replyCount },
-												repost: { count: postData.repostCount },
-												like: { count: postData.likeCount }
-											}}
-								/>
-							</div>
-							{#if i < feedItems.length - 1}
-								<hr class="border-base-200 dark:border-base-800 mx-4 sm:mx-0" />
-							{/if}
-						{/if}
-					{/each}
-				</div>
-
-				{#if loadingMore}
-					<div class="flex justify-center py-6">
-						<Loader2 class="text-base-400 animate-spin" size={24} />
-					</div>
-				{/if}
-
-				{#if !postsCursor && feedItems.length > 0}
-					<p class="text-base-400 py-6 text-center text-sm">You've reached the end</p>
-				{/if}
-			{:else}
-				<p class="text-base-400 py-8 text-center text-sm">No posts yet</p>
-			{/if}
-
-			<div class="pb-[max(0.75rem,env(safe-area-inset-bottom))]"></div>
+			<ScrollablePostList
+				items={feedItems}
+				loading={postsLoading}
+				{loadingMore}
+				hasMore={!!postsCursor}
+				cacheKey={listKey}
+				onLoadMore={loadMore}
+				emptyText="No posts yet"
+			/>
 		{/if}
 	</div>
 </div>

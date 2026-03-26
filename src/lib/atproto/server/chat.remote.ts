@@ -106,3 +106,67 @@ export const updateRead = command(
 		return { ok: true };
 	}
 );
+
+export const addReaction = command(
+	v.object({
+		convoId: v.string(),
+		messageId: v.string(),
+		value: v.string()
+	}),
+	async (input) => {
+		const client = getChatClient();
+
+		const res = await client.post('chat.bsky.convo.addReaction', {
+			input: {
+				convoId: input.convoId,
+				messageId: input.messageId,
+				value: input.value
+			}
+		});
+
+		if (!res.ok) error(res.status, 'Failed to add reaction');
+		return res.data;
+	}
+);
+
+export const removeReaction = command(
+	v.object({
+		convoId: v.string(),
+		messageId: v.string(),
+		value: v.string()
+	}),
+	async (input) => {
+		const client = getChatClient();
+
+		const res = await client.post('chat.bsky.convo.removeReaction', {
+			input: {
+				convoId: input.convoId,
+				messageId: input.messageId,
+				value: input.value
+			}
+		});
+
+		if (!res.ok) error(res.status, 'Failed to remove reaction');
+		return res.data;
+	}
+);
+
+export const deleteMessage = command(
+	v.object({
+		convoId: v.string(),
+		messageId: v.string()
+	}),
+	async (input) => {
+		const client = getChatClient();
+
+		const res = await client.post('chat.bsky.convo.deleteMessageForSelf', {
+			input: {
+				convoId: input.convoId,
+				messageId: input.messageId
+			}
+		});
+
+		if (!res.ok) error(res.status, 'Failed to delete message');
+		return res.data;
+	}
+);

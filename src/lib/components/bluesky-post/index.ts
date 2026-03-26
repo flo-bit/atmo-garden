@@ -17,7 +17,7 @@ function defaultHrefs(_baseUrl: string): Required<BlueskyHrefs> {
 	};
 }
 
-function resolveHrefs(baseUrl: string, hrefs?: BlueskyHrefs): Required<BlueskyHrefs> {
+export function resolveHrefs(baseUrl: string, hrefs?: BlueskyHrefs): Required<BlueskyHrefs> {
 	const defaults = defaultHrefs(baseUrl);
 	if (!hrefs) return defaults;
 	return {
@@ -84,7 +84,7 @@ const renderSegment = (
 	}
 };
 
-const RichText = (
+export const RichText = (
 	{ text, facets }: { text: string; facets?: Facet[] },
 	hrefs: Required<BlueskyHrefs>,
 	target?: string
@@ -162,7 +162,7 @@ function extractQuotedPost(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function convertEmbed(
+export function convertEmbed(
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	embedView: any,
 	hrefs: Required<BlueskyHrefs>,

@@ -17,7 +17,7 @@
 {#if visible}
 	<button
 		onclick={scrollToTop}
-		class="fixed bottom-6 right-6 z-40 cursor-pointer rounded-full bg-base-900/80 p-3 text-white shadow-lg backdrop-blur-sm transition-opacity hover:bg-base-900 dark:bg-base-100/80 dark:text-base-900 dark:hover:bg-base-100"
+		class="fixed bottom-20 right-6 z-40 lg:bottom-6 cursor-pointer rounded-full bg-base-900/80 p-3 text-white shadow-lg backdrop-blur-sm transition-opacity hover:bg-base-900 dark:bg-base-100/80 dark:text-base-900 dark:hover:bg-base-100"
 	>
 		<ArrowUp size={20} />
 	</button>

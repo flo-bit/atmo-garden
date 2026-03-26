@@ -4,15 +4,27 @@
 	import { user } from '$lib/atproto/auth.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { getMessages, sendMessage, acceptConvo, updateRead } from '$lib/atproto/server/chat.remote';
+	import { getMessages, sendMessage, acceptConvo, updateRead, addReaction, removeReaction, deleteMessage } from '$lib/atproto/server/chat.remote';
 	import { convoCache, getCachedMessages, setCachedMessages, markConvoRead } from '$lib/cache.svelte';
 	import type { ChatBskyConvoDefs } from '@atcute/bluesky';
-	import { ArrowLeft, Send, Loader2 } from '@lucide/svelte';
-	import { Avatar } from '@foxui/core';
+	import { ArrowLeft, Send, Loader2, SmilePlus, Trash2 } from '@lucide/svelte';
+	import { Avatar, sanitize } from '@foxui/core';
+	import { PopoverEmojiPicker } from '$lib/components/emoji-picker';
+	import { RichText, resolveHrefs, convertEmbed } from '$lib/components/bluesky-post';
+	import type { Embed } from '$lib/components/embed';
+	import Embed_ from '$lib/components/embed/Embed.svelte';
 
 	type MessageView = ChatBskyConvoDefs.MessageView;
 	type DeletedMessageView = ChatBskyConvoDefs.DeletedMessageView;
 	type ConvoView = ChatBskyConvoDefs.ConvoView;
+
+	const QUICK_EMOJIS = ['❤️', '😂', '👍', '😮', '🔥'];
+
+	const hrefs = resolveHrefs('https://bsky.app', {
+		profile: (handle, did) => `/profile/${did ?? handle}`,
+		post: (handle, postId) => `/profile/${handle}/post/${postId}`,
+		hashtag: (tag) => `/hashtag/${tag}`
+	});
 
 	let convoId = $derived(page.params.convoId);
 
@@ -31,11 +43,21 @@
 	let loadingOlder = $state(false);
 	let cursor = $state<string | null>(null);
 	let messagesContainer: HTMLDivElement | undefined = $state(undefined);
+	let hoveredMessageId = $state<string | null>(null);
+	let emojiPickerMessageId = $state<string | null>(null);
+
+	// Optimistic state: pending reactions and deletions
+	let pendingReactions = $state<Record<string, { value: string; adding: boolean }[]>>({});
+	let pendingDeletions = $state<Set<string>>(new Set());
 
 	let allMessages = $derived([...[...messages].reverse(), ...extraMessages]);
 
 	function isMessageView(msg: MessageView | DeletedMessageView): msg is MessageView {
 		return msg.$type !== 'chat.bsky.convo.defs#deletedMessageView';
+	}
+
+	function isDeleted(msgId: string): boolean {
+		return pendingDeletions.has(msgId);
 	}
 
 	function formatMessageTime(dateStr: string): string {
@@ -53,6 +75,112 @@
 		return diff > 5 * 60 * 1000;
 	}
 
+	function renderMessageHtml(msg: MessageView): string {
+		if (!msg.text) return '';
+		const html = RichText({ text: msg.text, facets: msg.facets }, hrefs);
+		return html.replace(/\n/g, '<br>');
+	}
+
+	function getMessageEmbeds(msg: MessageView): Embed[] {
+		if (!msg.embed) return [];
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const embed = convertEmbed(msg.embed as any, hrefs);
+		return embed ? [embed] : [];
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function getReactions(msg: any): { value: string; count: number; mine: boolean; pending: boolean }[] {
+		const grouped = new Map<string, { count: number; mine: boolean; pending: boolean }>();
+
+		// Real reactions from API
+		if (msg.reactions?.length) {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			for (const r of msg.reactions) {
+				const existing = grouped.get(r.value);
+				if (existing) {
+					existing.count++;
+					if (r.sender?.did === user.did) existing.mine = true;
+				} else {
+					grouped.set(r.value, { count: 1, mine: r.sender?.did === user.did, pending: false });
+				}
+			}
+		}
+
+		// Apply optimistic reactions
+		const pending = pendingReactions[msg.id] ?? [];
+		for (const p of pending) {
+			const existing = grouped.get(p.value);
+			if (p.adding) {
+				if (existing) {
+					if (!existing.mine) { existing.count++; existing.mine = true; existing.pending = true; }
+				} else {
+					grouped.set(p.value, { count: 1, mine: true, pending: true });
+				}
+			} else {
+				if (existing?.mine) {
+					existing.count--;
+					existing.mine = false;
+					existing.pending = true;
+					if (existing.count <= 0) grouped.delete(p.value);
+				}
+			}
+		}
+
+		return [...grouped.entries()].map(([value, data]) => ({ value, ...data }));
+	}
+
+	async function handleReaction(messageId: string, emoji: string, alreadyMine: boolean) {
+		emojiPickerMessageId = null;
+		const adding = !alreadyMine;
+
+		// Optimistic update
+		pendingReactions[messageId] = [...(pendingReactions[messageId] ?? []), { value: emoji, adding }];
+		pendingReactions = { ...pendingReactions }; // trigger reactivity
+
+		try {
+			if (adding) {
+				await addReaction({ convoId, messageId, value: emoji });
+			} else {
+				await removeReaction({ convoId, messageId, value: emoji });
+			}
+			// Refresh to get confirmed state
+			const msgsRes = await getMessages({ convoId });
+			messages = msgsRes.messages;
+			cursor = msgsRes.cursor;
+			setCachedMessages(convoId, messages);
+			extraMessages = [];
+		} catch (e) {
+			console.error('Failed to toggle reaction:', e);
+		} finally {
+			// Clear pending for this message
+			delete pendingReactions[messageId];
+			pendingReactions = { ...pendingReactions };
+		}
+	}
+
+	async function handleDelete(messageId: string) {
+		// Optimistic update
+		pendingDeletions = new Set([...pendingDeletions, messageId]);
+
+		try {
+			await deleteMessage({ convoId, messageId });
+			// Update real state
+			messages = messages.map((m) =>
+				m.id === messageId
+					? { ...m, $type: 'chat.bsky.convo.defs#deletedMessageView', text: undefined }
+					: m
+			);
+			extraMessages = extraMessages.filter((m) => m.id !== messageId);
+			setCachedMessages(convoId, messages);
+		} catch (e) {
+			console.error('Failed to delete message:', e);
+		} finally {
+			const next = new Set(pendingDeletions);
+			next.delete(messageId);
+			pendingDeletions = next;
+		}
+	}
+
 	function scrollToBottom() {
 		if (messagesContainer) {
 			messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -60,7 +188,6 @@
 	}
 
 	async function loadConvo() {
-		// Try cache for instant display
 		const allConvos = [...convoCache.acceptedConvos, ...convoCache.requestConvos];
 		convo = allConvos.find((c) => c.id === convoId) ?? null;
 
@@ -74,7 +201,6 @@
 			loading = true;
 		}
 
-		// Always fetch fresh messages
 		try {
 			const msgsRes = await getMessages({ convoId });
 			messages = msgsRes.messages;
@@ -101,7 +227,6 @@
 			messages = [...messages, ...res.messages];
 			cursor = res.cursor;
 			setCachedMessages(convoId, messages);
-			// Preserve scroll position
 			requestAnimationFrame(() => {
 				if (messagesContainer) {
 					messagesContainer.scrollTop = messagesContainer.scrollHeight - prevHeight;
@@ -122,8 +247,13 @@
 	}
 
 	$effect(() => {
-		convoId; // track
-		untrack(() => loadConvo());
+		convoId;
+		untrack(() => {
+			pendingReactions = {};
+			pendingDeletions = new Set();
+			emojiPickerMessageId = null;
+			loadConvo();
+		});
 	});
 
 	async function handleAccept() {
@@ -141,17 +271,14 @@
 		const pendingId = `pending-${Date.now()}`;
 		messageText = '';
 
-		// Show immediately as pending
 		pendingMessages = [...pendingMessages, { id: pendingId, text, sentAt: new Date().toISOString() }];
 		requestAnimationFrame(scrollToBottom);
 
 		try {
 			const result = await sendMessage({ convoId, text });
-			// Replace pending with real message
 			pendingMessages = pendingMessages.filter((m) => m.id !== pendingId);
 			extraMessages = [...extraMessages, result as MessageView];
 		} catch {
-			// Keep pending message visible but could mark as failed
 			pendingMessages = pendingMessages.filter((m) => m.id !== pendingId);
 		}
 	}
@@ -164,6 +291,7 @@
 	}
 </script>
 
+<div class="flex min-h-0 flex-1 flex-col">
 {#if loading}
 	<div class="flex flex-1 items-center justify-center">
 		<Loader2 class="text-base-400 animate-spin" size={28} />
@@ -213,8 +341,26 @@
 			{#each allMessages as msg, i (msg.id)}
 				{@const isOwn = msg.sender.did === user.did}
 				{@const showHeader = shouldShowHeader(i)}
-				{#if isMessageView(msg)}
-					<div class="flex items-start gap-3 px-1 {showHeader ? 'mt-2 py-0.5' : 'py-0'}">
+				{@const deleted = isDeleted(msg.id)}
+				{#if deleted || !isMessageView(msg)}
+					<div class="flex items-start gap-3 px-1 {showHeader ? 'mt-2 py-0.5' : 'py-0'} {deleted ? 'animate-pulse opacity-40' : ''}">
+						{#if showHeader}
+							<div class="mt-0.5 size-8 shrink-0"></div>
+						{:else}
+							<div class="w-8 shrink-0"></div>
+						{/if}
+						<p class="text-base-400 text-xs italic">Message deleted</p>
+					</div>
+				{:else}
+					{@const html = renderMessageHtml(msg)}
+					{@const embeds = getMessageEmbeds(msg)}
+					{@const reactions = getReactions(msg)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="group relative flex items-start gap-3 px-1 {showHeader ? 'mt-2 py-0.5' : 'py-0'}"
+						onmouseenter={() => hoveredMessageId = msg.id}
+						onmouseleave={() => { if (emojiPickerMessageId !== msg.id) hoveredMessageId = null; }}
+					>
 						{#if showHeader}
 							<button class="shrink-0 cursor-pointer" onmousedown={() => goto(`/profile/${isOwn ? (user.profile?.handle ?? user.did) : member.handle}`)}>
 								<Avatar src={isOwn ? user.profile?.avatar : member.avatar} class="mt-0.5 size-8" />
@@ -233,12 +379,77 @@
 									</span>
 								</div>
 							{/if}
-							<p class="text-base-800 dark:text-base-200 whitespace-pre-wrap break-words text-sm">{msg.text}</p>
+							{#if html}
+								<div class="chat-message text-base-800 dark:text-base-200 whitespace-pre-wrap break-words text-sm">
+									{@html sanitize(html, { ADD_ATTR: ['target', 'rel'] })}
+								</div>
+							{/if}
+							{#if embeds.length > 0}
+								{#each embeds as embed}
+									<Embed_ {embed} />
+								{/each}
+							{/if}
+
+							<!-- Reactions -->
+							{#if reactions.length > 0}
+								<div class="mt-1 flex flex-wrap gap-1">
+									{#each reactions as reaction}
+										<button
+											class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors cursor-pointer
+												{reaction.mine ? 'border-accent-400 bg-accent-50 dark:bg-accent-950/30 dark:border-accent-600' : 'border-base-200 dark:border-base-700 hover:bg-base-100 dark:hover:bg-base-800'}
+												{reaction.pending ? 'animate-pulse opacity-60' : ''}"
+											onclick={() => handleReaction(msg.id, reaction.value, reaction.mine)}
+										>
+											<span>{reaction.value}</span>
+											{#if reaction.count > 1}
+												<span class="text-base-500">{reaction.count}</span>
+											{/if}
+										</button>
+									{/each}
+								</div>
+							{/if}
 						</div>
-					</div>
-				{:else}
-					<div class="px-1 py-0.5">
-						<p class="text-base-400 text-xs italic">Message deleted</p>
+
+						<!-- Hover actions: quick emojis + emoji picker + delete -->
+						{#if hoveredMessageId === msg.id || emojiPickerMessageId === msg.id}
+							<div class="absolute -top-3 right-1 flex items-center gap-0.5 rounded-lg border border-base-200 bg-white px-1 py-0.5 shadow-sm dark:border-base-700 dark:bg-base-900">
+								{#each QUICK_EMOJIS as emoji}
+									{@const alreadyMine = reactions.some((r) => r.value === emoji && r.mine)}
+									<button
+										class="cursor-pointer rounded px-1 py-0.5 text-sm transition-all hover:scale-110 {alreadyMine ? 'bg-accent-100 dark:bg-accent-900/30' : 'hover:bg-base-100 dark:hover:bg-base-800'}"
+										onclick={() => handleReaction(msg.id, emoji, alreadyMine)}
+										title={emoji}
+									>
+										{emoji}
+									</button>
+								{/each}
+								<PopoverEmojiPicker
+									open={emojiPickerMessageId === msg.id}
+									onOpenChange={(v) => { emojiPickerMessageId = v ? msg.id : null; if (!v) hoveredMessageId = null; }}
+									onpicked={(emoji) => handleReaction(msg.id, emoji.unicode, false)}
+									triggerClasses="!p-1 !min-w-0 !h-auto !rounded text-base-400 hover:text-base-600 dark:hover:text-base-200"
+									triggerVariant="ghost"
+									triggerSize="icon"
+									side="top"
+									class="z-50"
+								>
+									{#snippet child({ props })}
+										<button {...props} class="rounded p-1 text-base-400 hover:text-base-600 dark:hover:text-base-200 cursor-pointer transition-colors" title="More reactions">
+											<SmilePlus size={14} />
+										</button>
+									{/snippet}
+								</PopoverEmojiPicker>
+								{#if isOwn}
+									<button
+										class="rounded p-1 text-base-400 hover:text-red-500 cursor-pointer transition-colors"
+										onclick={() => handleDelete(msg.id)}
+										title="Delete for me"
+									>
+										<Trash2 size={14} />
+									</button>
+								{/if}
+							</div>
+						{/if}
 					</div>
 				{/if}
 			{/each}
@@ -313,7 +524,7 @@
 					bind:value={messageText}
 					onkeydown={handleKeydown}
 					placeholder="Type a message..."
-		class="border-base-200 text-base-900 placeholder:text-base-400 focus:border-accent-400 focus:ring-accent-400 dark:border-base-700 dark:bg-base-800 dark:text-base-100 dark:placeholder:text-base-500 dark:focus:border-accent-500 flex-1 rounded-full border bg-white px-4 py-2 text-base focus:ring-1 focus:outline-none disabled:opacity-50"
+					class="border-base-200 text-base-900 placeholder:text-base-400 focus:border-accent-400 focus:ring-accent-400 dark:border-base-700 dark:bg-base-800 dark:text-base-100 dark:placeholder:text-base-500 dark:focus:border-accent-500 flex-1 rounded-full border bg-white px-4 py-2 text-base focus:ring-1 focus:outline-none disabled:opacity-50"
 				/>
 				<button
 					type="button"
@@ -327,3 +538,16 @@
 		</div>
 	{/if}
 {/if}
+</div>
+
+<style>
+	.chat-message :global(a) {
+		color: var(--color-accent-600);
+	}
+	:global(.dark) .chat-message :global(a) {
+		color: var(--color-accent-400);
+	}
+	.chat-message :global(a:hover) {
+		text-decoration: underline;
+	}
+</style>

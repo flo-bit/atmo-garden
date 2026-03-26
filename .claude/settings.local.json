@@ -9,7 +9,8 @@
       "Bash(pnpm check:*)",
       "Bash(pnpm env:generate-secret:*)",
       "Bash(pnpm build:agent-setup:*)",
-      "WebFetch(domain:flo-bit.dev)"
+      "WebFetch(domain:flo-bit.dev)",
+      "WebFetch(domain:docs.bsky.app)"
     ]
   }
 }

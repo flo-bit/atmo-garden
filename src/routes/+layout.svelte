@@ -65,8 +65,7 @@
 <LoginModal />
 
 <Head
-	title="statusphere"
-	emojiFavicon="🥳"
-	description="svelte + cloudflare workers statusphere"
-	image="/og.png"
+	title="atmo.social"
+	emojiFavicon="🌩️"
+	description="bsky client"
 />

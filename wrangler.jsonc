@@ -12,7 +12,7 @@
 		"enabled": true
 	},
 	"vars": {
-		"OAUTH_PUBLIC_URL": "https://atmo.social",
+		"OAUTH_PUBLIC_URL": "https://atmo.garden",
 		"ROOKERY_HOSTNAME": "pds.atmo.garden"
 	},
 	"kv_namespaces": [

@@ -375,6 +375,46 @@ export class WelcomeMatClient {
 	}
 
 	/**
+	 * Upload a blob to the PDS via DPoP. Returns the blob ref that can be
+	 * embedded in records (e.g. `app.bsky.actor.profile.avatar`).
+	 */
+	async uploadBlob(
+		bytes: Uint8Array,
+		mimeType: string
+	): Promise<{
+		$type: 'blob';
+		ref: { $link: string };
+		mimeType: string;
+		size: number;
+	}> {
+		const url = `${this.account.pds}/xrpc/com.atproto.repo.uploadBlob`;
+		const { accessToken, dpopProof } = await this.buildDpopProof('POST', url);
+		// Copy into a fresh ArrayBuffer so the fetch body type check is happy
+		// even when `bytes` is a view over a shared buffer.
+		const body = new ArrayBuffer(bytes.byteLength);
+		new Uint8Array(body).set(bytes);
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: {
+				Authorization: `DPoP ${accessToken}`,
+				DPoP: dpopProof,
+				'Content-Type': mimeType
+			},
+			body
+		});
+		if (!res.ok) {
+			throw new Error(`uploadBlob failed (${res.status}): ${await res.text()}`);
+		}
+		const json = (await res.json()) as { blob: unknown };
+		return json.blob as {
+			$type: 'blob';
+			ref: { $link: string };
+			mimeType: string;
+			size: number;
+		};
+	}
+
+	/**
 	 * putRecord via rookery's DPoP-auth'd endpoint. Replaces the record at
 	 * (repo, collection, rkey) with `record`. Upsert semantics: creates the
 	 * record if it doesn't exist.

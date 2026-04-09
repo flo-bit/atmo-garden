@@ -52,7 +52,7 @@
 	});
 </script>
 
-<div class="mx-auto w-full max-w-lg px-4 py-6">
+<div class="mx-auto w-full max-w-lg px-4 py-6 {community?.accentColor ?? ''}">
 	{#if loading}
 		<div class="flex items-center justify-center py-12">
 			<Loader2 class="text-base-400 animate-spin" size={28} />
@@ -61,8 +61,8 @@
 		<p class="text-sm text-red-500">{loadError}</p>
 	{:else if community}
 		{@const communityShort = community.handle.split('.')[0]}
-		<header class="mb-6 flex items-center gap-3">
-			<Avatar src={community.avatar ?? undefined} class="size-14" />
+		<header class="mb-6 flex items-center gap-4">
+			<Avatar src={community.avatar ?? undefined} class="size-24" />
 			<div>
 				<h1 class="text-xl font-bold">c/{communityShort}</h1>
 				<a

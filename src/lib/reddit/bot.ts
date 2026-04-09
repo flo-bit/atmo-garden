@@ -99,16 +99,26 @@ export type RegisterResult = {
  *   3. Write garden.atmo.community/self pinning the creator's DID
  *   4. Encrypt the secret key and store everything in D1
  */
+export type RegisterCommunityOptions = {
+	shortHandle: string;
+	creatorDid: Did;
+	description?: string;
+	/** Raw bytes + MIME type for the community avatar. */
+	avatar?: { bytes: Uint8Array; mimeType: string };
+	/** Tailwind color label, e.g. "pink", "blue", "lime". */
+	accentColor?: string;
+};
+
 export async function registerCommunity(
 	env: App.Platform['env'],
 	db: D1Database,
-	shortHandle: string,
-	creatorDid: Did,
-	userDescription?: string
+	opts: RegisterCommunityOptions
 ): Promise<RegisterResult> {
 	if (!env.ROOKERY_HOSTNAME) throw new Error('ROOKERY_HOSTNAME not configured');
 	if (!env.ROOKERY_SIGNUP_SECRET)
 		throw new Error('ROOKERY_SIGNUP_SECRET not configured');
+
+	const { shortHandle, creatorDid, description: userDescription, avatar, accentColor } = opts;
 
 	const { account } = await createRookeryAccount({
 		hostname: env.ROOKERY_HOSTNAME,
@@ -118,15 +128,17 @@ export async function registerCommunity(
 
 	const client = WelcomeMatClient.forAccount(account);
 
-	// Write garden.atmo.community/self on the community account itself,
-	// recording who created it. Non-fatal on failure — the community still
-	// exists in D1 and the bot can operate.
+	// Write garden.atmo.community/self. This record is the canonical
+	// location for per-community metadata we own (creator, accent color,
+	// future app-specific fields). Non-fatal on failure — the community
+	// still exists and the bot can operate.
 	try {
 		await client.createRecord(
 			'garden.atmo.community',
 			{
 				$type: 'garden.atmo.community',
 				creator: creatorDid,
+				accentColor: accentColor ?? 'pink',
 				createdAt: new Date().toISOString()
 			},
 			'self'
@@ -135,10 +147,23 @@ export async function registerCommunity(
 		console.error('[registerCommunity] failed to write garden.atmo.community/self', e);
 	}
 
+	// Upload the avatar blob (if provided) so we can reference it in the
+	// profile record below.
+	let avatarBlob:
+		| { $type: 'blob'; ref: { $link: string }; mimeType: string; size: number }
+		| null = null;
+	if (avatar) {
+		try {
+			avatarBlob = await client.uploadBlob(avatar.bytes, avatar.mimeType);
+		} catch (e) {
+			console.error('[registerCommunity] avatar upload failed', e);
+		}
+	}
+
 	// Build the on-network profile description: `https://<handle>` on the
 	// first line (so bsky viewers have a clickable link to our site) followed
 	// by the user's own description text, if provided. We merge into the
-	// record Rookery seeded so we don't wipe displayName / avatar.
+	// record Rookery seeded so we don't wipe displayName.
 	const trimmedUserDesc = userDescription?.trim() ?? '';
 	const fullDescription = trimmedUserDesc
 		? `https://${account.handle}\n\n${trimmedUserDesc}`
@@ -159,10 +184,11 @@ export async function registerCommunity(
 		await client.putRecord('app.bsky.actor.profile', 'self', {
 			...baseValue,
 			$type: 'app.bsky.actor.profile',
-			description: fullDescription
+			description: fullDescription,
+			...(avatarBlob ? { avatar: avatarBlob } : {})
 		});
 	} catch (e) {
-		console.error('[registerCommunity] failed to update profile description', e);
+		console.error('[registerCommunity] failed to update profile', e);
 	}
 
 	// Encrypt the hex-encoded secret key.
@@ -178,14 +204,14 @@ export async function registerCommunity(
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
 	let displayName: string | null = shortHandle;
-	let avatar: string | null = null;
+	let avatarUrl: string | null = null;
 	try {
 		const profile = await appview.get('app.bsky.actor.getProfile', {
 			params: { actor: account.did as Did }
 		});
 		if (profile.ok) {
 			displayName = profile.data.displayName ?? shortHandle;
-			avatar = profile.data.avatar ?? null;
+			avatarUrl = profile.data.avatar ?? null;
 		}
 	} catch {
 		// non-fatal — relay hasn't indexed yet
@@ -205,7 +231,7 @@ export async function registerCommunity(
 		public_jwk_json: JSON.stringify(account.publicJwk),
 		thumbprint: account.thumbprint,
 		display_name: displayName,
-		avatar,
+		avatar: avatarUrl,
 		description: cachedDescription
 	});
 

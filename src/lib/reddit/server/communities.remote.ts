@@ -11,6 +11,13 @@ import {
 	type PostWithCommunity
 } from '../db';
 import { registerCommunity } from '../bot';
+import { getRecord } from '../welcomemat';
+import {
+	ACCENT_COLORS,
+	DEFAULT_ACCENT_COLOR,
+	isAccentColor,
+	type AccentColor
+} from '../accent-colors';
 
 const HANDLE_DOMAIN = '.atmo.garden';
 
@@ -23,8 +30,12 @@ function fullHandle(input: string): string {
 type PublicCommunity = Omit<
 	CommunityRow,
 	'secret_key_ciphertext' | 'secret_key_iv' | 'public_jwk_json' | 'thumbprint'
->;
-function sanitize(row: CommunityRow): PublicCommunity {
+> & {
+	accentColor: AccentColor;
+	creator: string | null;
+};
+
+function sanitize(row: CommunityRow): Omit<PublicCommunity, 'accentColor' | 'creator'> {
 	/* eslint-disable @typescript-eslint/no-unused-vars */
 	const {
 		secret_key_ciphertext,
@@ -36,6 +47,45 @@ function sanitize(row: CommunityRow): PublicCommunity {
 	/* eslint-enable @typescript-eslint/no-unused-vars */
 	return rest;
 }
+
+/**
+ * Fetch `garden.atmo.community/self` from the community's PDS and extract
+ * the UI-relevant fields. Non-fatal on failure — returns defaults so the
+ * community still renders.
+ */
+async function fetchCommunityRecord(
+	pds: string,
+	did: string
+): Promise<{ accentColor: AccentColor; creator: string | null }> {
+	try {
+		const rec = await getRecord(pds, did, 'garden.atmo.community', 'self');
+		const value = (rec?.value ?? {}) as { accentColor?: unknown; creator?: unknown };
+		return {
+			accentColor: isAccentColor(value.accentColor) ? value.accentColor : DEFAULT_ACCENT_COLOR,
+			creator: typeof value.creator === 'string' ? value.creator : null
+		};
+	} catch {
+		return { accentColor: DEFAULT_ACCENT_COLOR, creator: null };
+	}
+}
+
+async function enrich(row: CommunityRow): Promise<PublicCommunity> {
+	const base = sanitize(row);
+	const extra = await fetchCommunityRecord(row.pds, row.did);
+	return { ...base, ...extra };
+}
+
+/** Decode a base64-encoded string into a Uint8Array (Workers-safe). */
+function decodeBase64(b64: string): Uint8Array {
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
+// 1 MiB cap — Bluesky's profile avatar limit is ~1MB.
+const MAX_AVATAR_BYTES = 1024 * 1024;
+const ALLOWED_AVATAR_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
 
 export const register = command(
 	v.object({
@@ -50,7 +100,15 @@ export const register = command(
 		// is just a sanity cap to reject absurdly large payloads before we
 		// touch the PDS. 256 graphemes can be up to ~1024 UTF-16 code units
 		// in pathological emoji-heavy strings.
-		description: v.optional(v.pipe(v.string(), v.maxLength(2048)))
+		description: v.optional(v.pipe(v.string(), v.maxLength(2048))),
+		accentColor: v.optional(v.picklist(ACCENT_COLORS)),
+		avatar: v.optional(
+			v.object({
+				// Base64-encoded image bytes (no data URL prefix).
+				base64: v.pipe(v.string(), v.maxLength(2 * 1024 * 1024)),
+				mimeType: v.picklist(ALLOWED_AVATAR_MIMES)
+			})
+		)
 	}),
 	async (input) => {
 		const { platform, locals } = getRequestEvent();
@@ -58,14 +116,23 @@ export const register = command(
 		if (!env || !env.DB) error(500, 'DB binding unavailable');
 		if (!locals.did) error(401, 'You must be signed in to create a community');
 
+		let avatarPayload: { bytes: Uint8Array; mimeType: string } | undefined;
+		if (input.avatar) {
+			const bytes = decodeBase64(input.avatar.base64);
+			if (bytes.byteLength > MAX_AVATAR_BYTES) {
+				error(400, `Avatar too large: max ${MAX_AVATAR_BYTES} bytes`);
+			}
+			avatarPayload = { bytes, mimeType: input.avatar.mimeType };
+		}
+
 		try {
-			const result = await registerCommunity(
-				env,
-				env.DB,
-				input.shortHandle,
-				locals.did,
-				input.description
-			);
+			const result = await registerCommunity(env, env.DB, {
+				shortHandle: input.shortHandle,
+				creatorDid: locals.did,
+				description: input.description,
+				accentColor: input.accentColor,
+				avatar: avatarPayload
+			});
 			return { ok: true, did: result.did, handle: result.handle };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
@@ -83,7 +150,7 @@ export const getCommunities = command(
 		if (!env || !env.DB) return [];
 
 		const rows = await listCommunities(env.DB);
-		return rows.map(sanitize);
+		return Promise.all(rows.map(enrich));
 	}
 );
 
@@ -95,7 +162,7 @@ export const getCommunity = command(
 		if (!env || !env.DB) return null;
 
 		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
-		return row ? sanitize(row) : null;
+		return row ? enrich(row) : null;
 	}
 );
 

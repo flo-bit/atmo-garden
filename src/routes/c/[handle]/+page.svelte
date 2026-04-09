@@ -60,12 +60,11 @@
 	{:else if loadError}
 		<p class="text-sm text-red-500">{loadError}</p>
 	{:else if community}
+		{@const communityShort = community.handle.split('.')[0]}
 		<header class="mb-6 flex items-center gap-3">
 			<Avatar src={community.avatar ?? undefined} class="size-14" />
 			<div>
-				<h1 class="text-xl font-bold">
-					{community.display_name ?? community.handle}
-				</h1>
+				<h1 class="text-xl font-bold">c/{communityShort}</h1>
 				<a
 					href={`https://bsky.app/profile/${community.handle}`}
 					target="_blank"
@@ -91,7 +90,7 @@
 				No submissions yet.
 			</p>
 		{:else}
-			<div class="flex flex-col gap-3">
+			<div class="divide-base-200 dark:divide-base-800 flex flex-col divide-y">
 				{#each posts as p (p.uri)}
 					<RedditPostCard row={p} quoted={(quoted[p.quoted_post_uri] ?? undefined) as never} />
 				{/each}

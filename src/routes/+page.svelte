@@ -61,12 +61,13 @@
 		{:else}
 			<div class="flex flex-wrap gap-2">
 				{#each communities as c (c.did)}
+					{@const short = c.handle.split('.')[0]}
 					<a
-						href={`/community/${c.handle}`}
+						href={`/c/${short}`}
 						class="border-base-200 dark:border-base-800 bg-base-50 dark:bg-base-900 hover:bg-base-100 dark:hover:bg-base-800 flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors"
 					>
 						<Avatar src={c.avatar ?? undefined} class="size-5" />
-						<span>{c.display_name ?? c.handle}</span>
+						<span>c/{short}</span>
 					</a>
 				{/each}
 			</div>
@@ -87,7 +88,7 @@
 				No submissions yet.
 			</p>
 		{:else}
-			<div class="flex flex-col gap-3">
+			<div class="divide-base-200 dark:divide-base-800 flex flex-col divide-y">
 				{#each feed as p (p.uri)}
 					<RedditPostCard row={p} quoted={(quoted[p.quoted_post_uri] ?? undefined) as never} showCommunity />
 				{/each}

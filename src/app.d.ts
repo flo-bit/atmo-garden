@@ -23,9 +23,9 @@ declare global {
 				OAUTH_PUBLIC_URL: string;
 				PROFILE_CACHE?: KVNamespace;
 				DB: D1Database;
-				BSKY_HANDLE: string;
-				BSKY_PASSWORD: string;
 				COMMUNITY_ENCRYPTION_KEY: string;
+				ROOKERY_HOSTNAME: string;
+				ROOKERY_SIGNUP_SECRET: string;
 				CRON_SECRET?: string;
 			};
 		}

@@ -1,13 +1,11 @@
 <script lang="ts">
+	/* eslint-disable svelte/no-navigation-without-resolve */
 	import '../app.css';
-	import { onMount } from 'svelte';
 	import { Head, Avatar, Button, ThemeToggle } from '@foxui/core';
-	import { House, MessageCircle, Bell, Search, Bookmark, Settings, Menu, X } from '@lucide/svelte';
+	import { House, Search, Bookmark, Settings, Menu, X } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { user } from '$lib/atproto/auth.svelte';
-	import { getUnreadCount } from '$lib/atproto/server/notifications.remote';
-	import { listConvos } from '$lib/atproto/server/chat.remote';
 	import LoginModal, { loginModalState } from '$lib/LoginModal.svelte';
 	import ImageLightbox from '$lib/components/embed/ImageLightbox.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
@@ -15,8 +13,6 @@
 	let { children } = $props();
 
 	let menuOpen = $state(false);
-	let notifUnread = $state(0);
-	let chatUnread = $state(0);
 	let path = $derived(page.url?.pathname ?? '/');
 	function isActive(href: string): boolean {
 		if (href === '/') return path === '/';
@@ -25,21 +21,6 @@
 	function navClass(href: string): string {
 		return isActive(href) ? 'text-accent-600 dark:text-accent-400' : '';
 	}
-
-	onMount(async () => {
-		if (!user.did) return;
-		try {
-			const [notifRes, convosRes] = await Promise.all([
-				getUnreadCount({}),
-				listConvos({ status: 'accepted' })
-			]);
-			notifUnread = notifRes.count;
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			chatUnread = (convosRes.convos as any[]).reduce((s, c) => s + (c.unreadCount ?? 0), 0);
-		} catch {
-			// silent
-		}
-	});
 </script>
 
 <Sidebar>
@@ -48,22 +29,6 @@
 	</Button>
 	<Button href="/search" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/search'); }} variant="ghost" size="icon" class={navClass('/search')}>
 		<Search size={20} strokeWidth={isActive('/search') ? 2.5 : 2} />
-	</Button>
-	<Button href="/chat" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/chat'); }} variant="ghost" size="icon" class="relative {navClass('/chat')}">
-		<MessageCircle size={20} strokeWidth={isActive('/chat') ? 2.5 : 2} />
-		{#if chatUnread > 0}
-			<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-				{chatUnread > 99 ? '99+' : chatUnread}
-			</span>
-		{/if}
-	</Button>
-	<Button href="/notifications" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/notifications'); }} variant="ghost" size="icon" class="relative {navClass('/notifications')}">
-		<Bell size={20} strokeWidth={isActive('/notifications') ? 2.5 : 2} />
-		{#if notifUnread > 0}
-			<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-				{notifUnread > 99 ? '99+' : notifUnread}
-			</span>
-		{/if}
 	</Button>
 	{#if user.did}
 		<Button href="/bookmarks" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/bookmarks'); }} variant="ghost" size="icon" class={navClass('/bookmarks')}>
@@ -123,32 +88,6 @@
 				<Search size={20} strokeWidth={isActive('/search') ? 2.5 : 2} />
 				<span class="font-medium">Search</span>
 			</a>
-			<a
-				href="/chat"
-				onmousedown={(e) => { e.preventDefault(); menuOpen = false; goto('/chat'); }}
-				class="relative flex items-center gap-3 rounded-full px-4 py-2 text-sm transition-colors {navClass('/chat')}"
-			>
-				<MessageCircle size={20} strokeWidth={isActive('/chat') ? 2.5 : 2} />
-				<span class="font-medium">Messages</span>
-				{#if chatUnread > 0}
-					<span class="bg-accent-500 ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white">
-						{chatUnread > 99 ? '99+' : chatUnread}
-					</span>
-				{/if}
-			</a>
-			<a
-				href="/notifications"
-				onmousedown={(e) => { e.preventDefault(); menuOpen = false; goto('/notifications'); }}
-				class="relative flex items-center gap-3 rounded-full px-4 py-2 text-sm transition-colors {navClass('/notifications')}"
-			>
-				<Bell size={20} strokeWidth={isActive('/notifications') ? 2.5 : 2} />
-				<span class="font-medium">Notifications</span>
-				{#if notifUnread > 0}
-					<span class="bg-accent-500 ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white">
-						{notifUnread > 99 ? '99+' : notifUnread}
-					</span>
-				{/if}
-			</a>
 			{#if user.did}
 				<a
 					href="/bookmarks"
@@ -188,28 +127,11 @@
 				<House size={22} strokeWidth={isActive('/') ? 2.5 : 2} />
 			</a>
 			<a
-				href="/chat"
-				onmousedown={(e) => { e.preventDefault(); goto('/chat'); }}
-				class="relative flex items-center justify-center p-2 {navClass('/chat')}"
+				href="/search"
+				onmousedown={(e) => { e.preventDefault(); goto('/search'); }}
+				class="flex items-center justify-center p-2 {navClass('/search')}"
 			>
-				<MessageCircle size={22} strokeWidth={isActive('/chat') ? 2.5 : 2} />
-				{#if chatUnread > 0}
-					<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-						{chatUnread > 99 ? '99+' : chatUnread}
-					</span>
-				{/if}
-			</a>
-			<a
-				href="/notifications"
-				onmousedown={(e) => { e.preventDefault(); goto('/notifications'); }}
-				class="relative flex items-center justify-center p-2 {navClass('/notifications')}"
-			>
-				<Bell size={22} strokeWidth={isActive('/notifications') ? 2.5 : 2} />
-				{#if notifUnread > 0}
-					<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-						{notifUnread > 99 ? '99+' : notifUnread}
-					</span>
-				{/if}
+				<Search size={22} strokeWidth={isActive('/search') ? 2.5 : 2} />
 			</a>
 			{#if user.did}
 				{@const profileHref = `/profile/${user.profile?.handle ?? user.did}`}
@@ -243,7 +165,7 @@
 <ScrollToTop />
 
 <Head
-	title="atmo.social"
-	emojiFavicon="🌩️"
-	description="bsky client"
+	title="atmo.garden"
+	emojiFavicon="🌺"
+	description="communities on bsky"
 />

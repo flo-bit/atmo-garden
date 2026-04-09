@@ -8,6 +8,6 @@ export default defineConfig({
 	server: {
 		host: '127.0.0.1',
 		port: DEV_PORT,
-		allowedHosts: ['vital-fancy-duke-draw.trycloudflare.com']
+		allowedHosts: []
 	}
 });

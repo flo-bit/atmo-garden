@@ -1,187 +1,62 @@
-// Reddit-on-Bluesky bot: server-side logic for logging in as community
-// accounts, managing the central curate list, reading DMs, and creating
-// quote posts from DM submissions.
+// Reddit-on-Bluesky bot: server-side logic for creating rookery-backed
+// community accounts, reading their DMs via Bluesky's chat service, and
+// turning submission DMs into quote posts on Bluesky.
+//
+// All auth goes through rookery's WelcomeMat DPoP flow (secp256k1). Chat
+// operations use service-auth JWTs that rookery issues via
+// getServiceAuth, which api.bsky.chat accepts because the token is signed
+// by the account's secp256k1 repo signing key (published in its DID doc).
 
-import { Client, CredentialManager, simpleFetchHandler } from '@atcute/client';
+import { Client, simpleFetchHandler } from '@atcute/client';
 import type { Did, ResourceUri } from '@atcute/lexicons';
-import * as TID from '@atcute/tid';
-import { getPDS, actorToDid } from '$lib/atproto/methods';
 import { decryptPassword, encryptPassword } from './crypto';
 import {
 	getCombinedFeed,
-	getMeta,
 	getPostsDueForRefresh,
 	hasSubmission,
 	insertCommunity,
 	insertPost,
 	listCommunities,
-	setMeta,
 	updateCommunityProfile,
 	updatePostMetrics,
 	type CommunityRow
 } from './db';
-
-const PROCESSED_REACTION = '✅';
 import { getPostCid, parseSubmission } from './submission';
+import {
+	WelcomeMatClient,
+	createRookeryAccount,
+	type EcPublicJwk,
+	type RookeryAccount
+} from './welcomemat';
 
 const PUBLIC_APPVIEW = 'https://public.api.bsky.app';
-const CURATE_LIST_META_KEY = 'curate_list_uri';
-const CURATE_LIST_RKEY_META_KEY = 'curate_list_rkey';
-
-export type AuthedAccount = {
-	did: Did;
-	handle: string;
-	pds: string;
-	manager: CredentialManager;
-	pdsClient: Client; // repo ops
-	chatClient: Client; // chat proxied to api.bsky.chat
-};
+const CHAT_SERVICE_DID = 'did:web:api.bsky.chat';
+const CHAT_SERVICE_BASE = 'https://api.bsky.chat/xrpc';
+const PROCESSED_REACTION = '✅';
 
 // -------------------------------------------------------------------------
-// Auth helpers
+// Loading a client for a stored community
 // -------------------------------------------------------------------------
 
-/**
- * Log in to a PDS using an app password and return a ready-to-use pair of
- * clients — one for the PDS (for createRecord etc) and one proxied through
- * the bsky chat service (for chat.bsky.convo.*).
- */
-export async function loginWithAppPassword(
-	identifier: string,
-	password: string,
-	pdsUrl?: string
-): Promise<AuthedAccount> {
-	// Resolve identifier → PDS if we don't already know the PDS. We rely on
-	// the login response for the authoritative did/handle.
-	let pds = pdsUrl;
-
-	if (!pds) {
-		const resolvedDid = await actorToDid(identifier);
-		const resolvedPds = await getPDS(resolvedDid);
-		if (!resolvedPds) throw new Error(`No PDS found for ${identifier}`);
-		pds = resolvedPds;
-	}
-
-	const manager = new CredentialManager({ service: pds });
-	const session = await manager.login({ identifier, password });
-	const handle = session.handle;
-	const did: Did = session.did;
-
-	const pdsClient = new Client({ handler: manager });
-	const chatClient = new Client({
-		handler: manager,
-		proxy: { did: 'did:web:api.bsky.chat' as Did, serviceId: '#bsky_chat' }
-	});
-
-	return { did, handle, pds, manager, pdsClient, chatClient };
-}
-
-export async function loginMainAccount(env: App.Platform['env']): Promise<AuthedAccount> {
-	if (!env.BSKY_HANDLE || !env.BSKY_PASSWORD) {
-		throw new Error('BSKY_HANDLE / BSKY_PASSWORD not configured');
-	}
-	return loginWithAppPassword(env.BSKY_HANDLE, env.BSKY_PASSWORD);
-}
-
-export async function loginCommunity(
-	row: CommunityRow,
-	env: App.Platform['env']
-): Promise<AuthedAccount> {
-	const password = await decryptPassword(
-		row.password_ciphertext,
-		row.password_iv,
+async function loadClient(
+	env: App.Platform['env'],
+	row: CommunityRow
+): Promise<WelcomeMatClient> {
+	const secretKeyHex = await decryptPassword(
+		row.secret_key_ciphertext,
+		row.secret_key_iv,
 		env.COMMUNITY_ENCRYPTION_KEY
 	);
-	return loginWithAppPassword(row.handle, password, row.pds);
-}
-
-// -------------------------------------------------------------------------
-// Curate list management
-// -------------------------------------------------------------------------
-
-/**
- * Ensure that the main account has a curate list for tracking community
- * accounts. Returns the list's AT URI. Creates the list if missing.
- */
-export async function ensureCurateList(
-	main: AuthedAccount,
-	db: D1Database
-): Promise<ResourceUri> {
-	const cached = await getMeta(db, CURATE_LIST_META_KEY);
-	if (cached) return cached as ResourceUri;
-
-	// Check whether the main account already has a reddit communities list.
-	const existing = await main.pdsClient.get('com.atproto.repo.listRecords', {
-		params: {
-			repo: main.did,
-			collection: 'app.bsky.graph.list',
-			limit: 100
-		}
-	});
-
-	if (existing.ok) {
-		for (const rec of existing.data.records) {
-			const value = rec.value as { name?: string; purpose?: string };
-			if (
-				value?.purpose === 'app.bsky.graph.defs#curatelist' &&
-				value?.name === 'atmo communities'
-			) {
-				const uri = rec.uri as ResourceUri;
-				await setMeta(db, CURATE_LIST_META_KEY, uri);
-				const rkey = uri.split('/').pop() ?? '';
-				await setMeta(db, CURATE_LIST_RKEY_META_KEY, rkey);
-				return uri;
-			}
-		}
-	}
-
-	// Create the list.
-	const rkey = TID.now();
-	const create = await main.pdsClient.post('com.atproto.repo.createRecord', {
-		input: {
-			repo: main.did,
-			collection: 'app.bsky.graph.list',
-			rkey,
-			record: {
-				$type: 'app.bsky.graph.list',
-				purpose: 'app.bsky.graph.defs#curatelist',
-				name: 'atmo communities',
-				description: 'Communities registered on atmo.social (reddit-on-bluesky)',
-				createdAt: new Date().toISOString()
-			}
-		}
-	});
-
-	if (!create.ok) throw new Error('Failed to create curate list');
-	const uri = create.data.uri as ResourceUri;
-	await setMeta(db, CURATE_LIST_META_KEY, uri);
-	await setMeta(db, CURATE_LIST_RKEY_META_KEY, rkey);
-	return uri;
-}
-
-/**
- * Add a community DID to the curate list.
- */
-export async function addCommunityToList(
-	main: AuthedAccount,
-	listUri: ResourceUri,
-	communityDid: Did
-): Promise<void> {
-	const rkey = TID.now();
-	const res = await main.pdsClient.post('com.atproto.repo.createRecord', {
-		input: {
-			repo: main.did,
-			collection: 'app.bsky.graph.listitem',
-			rkey,
-			record: {
-				$type: 'app.bsky.graph.listitem',
-				list: listUri,
-				subject: communityDid,
-				createdAt: new Date().toISOString()
-			}
-		}
-	});
-	if (!res.ok) throw new Error('Failed to add listitem');
+	const publicJwk = JSON.parse(row.public_jwk_json) as EcPublicJwk;
+	const account: RookeryAccount = {
+		did: row.did,
+		handle: row.handle,
+		pds: row.pds,
+		thumbprint: row.thumbprint,
+		publicJwk,
+		secretKeyHex
+	};
+	return WelcomeMatClient.forAccount(account);
 }
 
 // -------------------------------------------------------------------------
@@ -193,47 +68,76 @@ export type RegisterResult = {
 	handle: string;
 };
 
+/**
+ * Create a brand-new rookery community account.
+ *
+ * Flow:
+ *   1. Generate a secp256k1 keypair
+ *   2. Sign up on rookery (which auto-seeds chat.bsky.actor.declaration
+ *      and a bot-labeled app.bsky.actor.profile)
+ *   3. Encrypt the secret key and store everything in D1
+ */
 export async function registerCommunity(
 	env: App.Platform['env'],
 	db: D1Database,
-	identifier: string,
-	password: string
+	shortHandle: string
 ): Promise<RegisterResult> {
-	// Log in as the community to validate credentials.
-	const community = await loginWithAppPassword(identifier, password);
+	if (!env.ROOKERY_HOSTNAME) throw new Error('ROOKERY_HOSTNAME not configured');
+	if (!env.ROOKERY_SIGNUP_SECRET)
+		throw new Error('ROOKERY_SIGNUP_SECRET not configured');
 
-	// Store encrypted credentials in D1.
-	const { ciphertext, iv } = await encryptPassword(password, env.COMMUNITY_ENCRYPTION_KEY);
+	const { account } = await createRookeryAccount({
+		hostname: env.ROOKERY_HOSTNAME,
+		handle: shortHandle,
+		signupSecret: env.ROOKERY_SIGNUP_SECRET
+	});
 
-	// Fetch profile metadata for the registration preview.
+	// Encrypt the hex-encoded secret key.
+	const { ciphertext, iv } = await encryptPassword(
+		account.secretKeyHex,
+		env.COMMUNITY_ENCRYPTION_KEY
+	);
+
+	// Fetch the profile the signup seeded so we can cache display name /
+	// description for the UI. Rookery writes these immediately but the relay
+	// may not have propagated them yet — fall back to the short handle.
 	const appview = new Client({
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
-	const profile = await appview.get('app.bsky.actor.getProfile', {
-		params: { actor: community.did }
-	});
+	let displayName: string | null = shortHandle;
+	let avatar: string | null = null;
+	let description: string | null = `https://${account.handle}`;
+	try {
+		const profile = await appview.get('app.bsky.actor.getProfile', {
+			params: { actor: account.did as Did }
+		});
+		if (profile.ok) {
+			displayName = profile.data.displayName ?? shortHandle;
+			avatar = profile.data.avatar ?? null;
+			description = profile.data.description ?? description;
+		}
+	} catch {
+		// non-fatal — relay hasn't indexed yet
+	}
 
 	await insertCommunity(db, {
-		did: community.did,
-		handle: community.handle,
-		pds: community.pds,
-		password_ciphertext: ciphertext,
-		password_iv: iv,
-		display_name: profile.ok ? profile.data.displayName ?? null : null,
-		avatar: profile.ok ? profile.data.avatar ?? null : null,
-		description: profile.ok ? profile.data.description ?? null : null
+		did: account.did as Did,
+		handle: account.handle,
+		pds: account.pds,
+		secret_key_ciphertext: ciphertext,
+		secret_key_iv: iv,
+		public_jwk_json: JSON.stringify(account.publicJwk),
+		thumbprint: account.thumbprint,
+		display_name: displayName,
+		avatar,
+		description
 	});
 
-	// Add the DID to the main curate list.
-	const main = await loginMainAccount(env);
-	const listUri = await ensureCurateList(main, db);
-	await addCommunityToList(main, listUri, community.did);
-
-	return { did: community.did, handle: community.handle };
+	return { did: account.did as Did, handle: account.handle };
 }
 
 // -------------------------------------------------------------------------
-// DM processing + quote posting
+// Chat types
 // -------------------------------------------------------------------------
 
 type ChatConvo = {
@@ -263,107 +167,164 @@ type ChatMessage = {
 	reactions?: ChatReaction[];
 };
 
+// -------------------------------------------------------------------------
+// api.bsky.chat calls via service-auth tokens
+// -------------------------------------------------------------------------
+
 /**
- * Poll all convos for a community and turn fresh submission DMs into quote
- * posts. Returns the number of quote posts created.
+ * Call an api.bsky.chat XRPC method as the given community. Automatically
+ * fetches a service-auth token from rookery scoped to the method.
+ */
+async function chatCall<T>(
+	client: WelcomeMatClient,
+	method: string,
+	init: { method?: 'GET' | 'POST'; query?: Record<string, string>; body?: unknown }
+): Promise<{ ok: boolean; status: number; data: T | { error: string; message?: string } }> {
+	const httpMethod = init.method ?? 'GET';
+	const token = await client.getServiceAuth(CHAT_SERVICE_DID, method);
+
+	const url = new URL(`${CHAT_SERVICE_BASE}/${method}`);
+	if (init.query) {
+		for (const [k, v] of Object.entries(init.query)) {
+			if (v !== undefined) url.searchParams.set(k, v);
+		}
+	}
+
+	const req: RequestInit = {
+		method: httpMethod,
+		headers: {
+			Authorization: `Bearer ${token}`,
+			...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {})
+		},
+		...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {})
+	};
+
+	const res = await fetch(url.toString(), req);
+	const text = await res.text();
+	let data: unknown;
+	try {
+		data = text ? JSON.parse(text) : {};
+	} catch {
+		data = { error: 'ParseError', message: text };
+	}
+	return { ok: res.ok, status: res.status, data: data as never };
+}
+
+async function listConvos(
+	client: WelcomeMatClient,
+	status: 'accepted' | 'request'
+): Promise<ChatConvo[]> {
+	const res = await chatCall<{ convos: ChatConvo[] }>(
+		client,
+		'chat.bsky.convo.listConvos',
+		{ method: 'GET', query: { limit: '50', status } }
+	);
+	if (!res.ok) return [];
+	return (res.data as { convos: ChatConvo[] }).convos ?? [];
+}
+
+async function getMessages(
+	client: WelcomeMatClient,
+	convoId: string
+): Promise<ChatMessage[]> {
+	const res = await chatCall<{ messages: ChatMessage[] }>(
+		client,
+		'chat.bsky.convo.getMessages',
+		{ method: 'GET', query: { convoId, limit: '100' } }
+	);
+	if (!res.ok) return [];
+	return (res.data as { messages: ChatMessage[] }).messages ?? [];
+}
+
+async function acceptConvo(client: WelcomeMatClient, convoId: string): Promise<void> {
+	await chatCall(client, 'chat.bsky.convo.acceptConvo', {
+		method: 'POST',
+		body: { convoId }
+	});
+}
+
+async function addReaction(
+	client: WelcomeMatClient,
+	convoId: string,
+	messageId: string,
+	value: string
+): Promise<void> {
+	await chatCall(client, 'chat.bsky.convo.addReaction', {
+		method: 'POST',
+		body: { convoId, messageId, value }
+	}).catch(() => {});
+}
+
+// -------------------------------------------------------------------------
+// DM processing
+// -------------------------------------------------------------------------
+
+/**
+ * Poll both accepted + request convos for a community and turn fresh
+ * submission DMs into quote posts. Returns the number of quote posts
+ * created this call.
  */
 export async function processCommunityDms(
 	env: App.Platform['env'],
 	db: D1Database,
 	row: CommunityRow
 ): Promise<number> {
-	const community = await loginCommunity(row, env);
+	const client = await loadClient(env, row);
 	let created = 0;
 
-	// Fetch all convos (both accepted and requested). We have to do two calls
-	// because listConvos filters by status.
-	const convoLists = await Promise.all([
-		community.chatClient.get('chat.bsky.convo.listConvos', {
-			params: { limit: 50, status: 'accepted' }
-		}),
-		community.chatClient.get('chat.bsky.convo.listConvos', {
-			params: { limit: 50, status: 'request' }
-		})
+	const [accepted, requested] = await Promise.all([
+		listConvos(client, 'accepted'),
+		listConvos(client, 'request')
 	]);
-
-	const convos: ChatConvo[] = [];
-	for (const res of convoLists) {
-		if (res.ok) {
-			for (const c of res.data.convos as unknown as ChatConvo[]) convos.push(c);
-		}
-	}
+	const convos = [...accepted, ...requested];
 
 	for (const convo of convos) {
-		// Skip empty convos / convos where we are the only participant.
-		const otherMembers = convo.members.filter((m) => m.did !== community.did);
+		const otherMembers = convo.members.filter((m) => m.did !== row.did);
 		if (otherMembers.length === 0) continue;
 
-		// Accept request convos so we can process them.
 		if (convo.status === 'request') {
-			try {
-				await community.chatClient.post('chat.bsky.convo.acceptConvo', {
-					input: { convoId: convo.id }
-				});
-			} catch {
-				// non-fatal
-			}
+			await acceptConvo(client, convo.id);
 		}
 
-		// Pull the latest page of messages. Processed messages are marked
-		// with a ✅ reaction from the community itself, so we don't need any
-		// DB cursor — we just walk the page and skip anything already reacted.
-		const msgRes = await community.chatClient.get('chat.bsky.convo.getMessages', {
-			params: { convoId: convo.id, limit: 100 }
-		});
-		if (!msgRes.ok) continue;
-		const messages = msgRes.data.messages as unknown as ChatMessage[];
-
-		// Process oldest → newest so reactions appear in order in the chat.
+		const messages = await getMessages(client, convo.id);
+		// Process oldest → newest so reactions appear in order.
 		for (const msg of [...messages].reverse()) {
 			if (msg.$type === 'chat.bsky.convo.defs#deletedMessageView') continue;
 			if (!msg.sender) continue;
-			// Skip messages the community sent.
-			if (msg.sender.did === community.did) continue;
+			if (msg.sender.did === row.did) continue;
 
 			// Already processed? Look for our own ✅ reaction on this message.
 			const alreadyProcessed = msg.reactions?.some(
-				(r) => r.value === PROCESSED_REACTION && r.sender?.did === community.did
+				(r) => r.value === PROCESSED_REACTION && r.sender?.did === row.did
 			);
 			if (alreadyProcessed) continue;
 
-			const submission = await parseSubmission({ text: msg.text, embed: msg.embed });
+			const submission = await parseSubmission({
+				text: msg.text,
+				embed: msg.embed ?? undefined
+			});
 			if (!submission) {
-				// Not a valid submission — still mark it handled so we don't
-				// re-parse on every cron run.
-				await community.chatClient
-					.post('chat.bsky.convo.addReaction', {
-						input: { convoId: convo.id, messageId: msg.id, value: PROCESSED_REACTION }
-					})
-					.catch(() => {});
+				// Mark as handled so we don't re-parse on every cron run.
+				await addReaction(client, convo.id, msg.id, PROCESSED_REACTION);
 				continue;
 			}
 
-			// Extra safety: even if the reaction didn't stick last time, the
-			// posts table has a unique index on (community_did, quoted_post_uri)
-			// and is authoritative. Check before hitting createRecord so we
-			// never double-post to Bluesky.
-			if (await hasSubmission(db, community.did, submission.postUri)) {
-				await community.chatClient
-					.post('chat.bsky.convo.addReaction', {
-						input: { convoId: convo.id, messageId: msg.id, value: PROCESSED_REACTION }
-					})
-					.catch(() => {});
+			// Check dedup before hitting createRecord so we never double-post.
+			if (await hasSubmission(db, row.did, submission.postUri)) {
+				await addReaction(client, convo.id, msg.id, PROCESSED_REACTION);
 				continue;
 			}
 
-			const ok = await createSubmissionPost(db, community, submission, msg.sender.did as Did);
+			const ok = await createSubmissionPost(
+				db,
+				client,
+				row,
+				submission,
+				msg.sender.did as Did
+			);
 			if (ok) {
 				created++;
-				await community.chatClient
-					.post('chat.bsky.convo.addReaction', {
-						input: { convoId: convo.id, messageId: msg.id, value: PROCESSED_REACTION }
-					})
-					.catch(() => {});
+				await addReaction(client, convo.id, msg.id, PROCESSED_REACTION);
 			}
 		}
 	}
@@ -373,47 +334,42 @@ export async function processCommunityDms(
 
 async function createSubmissionPost(
 	db: D1Database,
-	community: AuthedAccount,
+	client: WelcomeMatClient,
+	row: CommunityRow,
 	submission: { title: string; postUri: ResourceUri },
 	senderDid: Did
 ): Promise<boolean> {
-	// Resolve the CID of the post being quoted.
+	// Resolve the CID of the post being quoted via the public appview.
 	const appview = new Client({
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
-
 	const quotedCid = await getPostCid(appview, submission.postUri);
 	if (!quotedCid) return false;
 
-	const rkey = TID.now();
 	const createdAt = new Date().toISOString();
-
-	const res = await community.pdsClient.post('com.atproto.repo.createRecord', {
-		input: {
-			repo: community.did,
-			collection: 'app.bsky.feed.post',
-			rkey,
-			record: {
-				$type: 'app.bsky.feed.post',
-				text: submission.title,
-				createdAt,
-				embed: {
-					$type: 'app.bsky.embed.record',
-					record: {
-						uri: submission.postUri,
-						cid: quotedCid
-					}
+	let result: { uri: string; cid: string };
+	try {
+		result = await client.createRecord('app.bsky.feed.post', {
+			$type: 'app.bsky.feed.post',
+			text: submission.title,
+			createdAt,
+			embed: {
+				$type: 'app.bsky.embed.record',
+				record: {
+					uri: submission.postUri,
+					cid: quotedCid
 				}
 			}
-		}
-	});
-
-	if (!res.ok) return false;
+		});
+	} catch (e) {
+		console.error('[createSubmissionPost] rookery createRecord failed', e);
+		return false;
+	}
 
 	const inserted = await insertPost(db, {
-		uri: res.data.uri,
-		cid: res.data.cid,
-		community_did: community.did,
+		uri: result.uri,
+		cid: result.cid,
+		community_did: row.did,
 		title: submission.title,
 		quoted_post_uri: submission.postUri,
 		quoted_post_cid: quotedCid,
@@ -423,18 +379,13 @@ async function createSubmissionPost(
 		repost_count: 0,
 		indexed_at: createdAt
 	});
-
 	return inserted;
 }
 
 // -------------------------------------------------------------------------
-// Post metric refresh
+// Metric refresh (unchanged — uses public appview)
 // -------------------------------------------------------------------------
 
-/**
- * Refresh cached like/reply/repost counts for stale posts per the decay
- * schedule. Uses the public appview (unauthenticated) for efficiency.
- */
 export async function refreshPostMetrics(db: D1Database): Promise<number> {
 	const due = await getPostsDueForRefresh(db, 100);
 	if (due.length === 0) return 0;
@@ -444,7 +395,6 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 	});
 
 	let refreshed = 0;
-	// getPosts caps at 25 URIs per request.
 	for (let i = 0; i < due.length; i += 25) {
 		const batch = due.slice(i, i + 25).map((p) => p.uri as ResourceUri);
 		try {
@@ -484,7 +434,6 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	const errors: string[] = [];
 	const communities = await listCommunities(db);
 
-	// Keep profile cache refreshed (cheap — one appview call per community).
 	const appview = new Client({
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
@@ -498,7 +447,7 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 			errors.push(`${row.handle}: ${String(e)}`);
 		}
 
-		// Best-effort: refresh profile metadata (avatar/display name/description).
+		// Best-effort: refresh cached profile metadata (avatar, display name, desc).
 		try {
 			const profile = await appview.get('app.bsky.actor.getProfile', {
 				params: { actor: row.did }
@@ -528,8 +477,5 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	};
 }
 
-// -------------------------------------------------------------------------
-// Convenience: combined feed wrapper so routes don't import db.ts directly.
-// -------------------------------------------------------------------------
-
+// Convenience re-export so routes don't need to import db.ts directly.
 export { getCombinedFeed };

@@ -12,19 +12,40 @@ import {
 } from '../db';
 import { registerCommunity } from '../bot';
 
-// Never ship password_ciphertext/iv to the client.
-type PublicCommunity = Omit<CommunityRow, 'password_ciphertext' | 'password_iv'>;
+const HANDLE_DOMAIN = '.atmo.garden';
+
+/** Normalize "bob" → "bob.atmo.garden". Full handles pass through unchanged. */
+function fullHandle(input: string): string {
+	return input.includes('.') ? input : input + HANDLE_DOMAIN;
+}
+
+// Never ship encrypted key material to the client.
+type PublicCommunity = Omit<
+	CommunityRow,
+	'secret_key_ciphertext' | 'secret_key_iv' | 'public_jwk_json' | 'thumbprint'
+>;
 function sanitize(row: CommunityRow): PublicCommunity {
 	/* eslint-disable @typescript-eslint/no-unused-vars */
-	const { password_ciphertext, password_iv, ...rest } = row;
+	const {
+		secret_key_ciphertext,
+		secret_key_iv,
+		public_jwk_json,
+		thumbprint,
+		...rest
+	} = row;
 	/* eslint-enable @typescript-eslint/no-unused-vars */
 	return rest;
 }
 
 export const register = command(
 	v.object({
-		identifier: v.pipe(v.string(), v.minLength(3)),
-		password: v.pipe(v.string(), v.minLength(1))
+		// Short handle (single label). Rookery appends the configured domain.
+		shortHandle: v.pipe(
+			v.string(),
+			v.regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, 'Must be [a-z0-9-], single label'),
+			v.minLength(3),
+			v.maxLength(32)
+		)
 	}),
 	async (input) => {
 		const { platform } = getRequestEvent();
@@ -32,7 +53,7 @@ export const register = command(
 		if (!env || !env.DB) error(500, 'DB binding unavailable');
 
 		try {
-			const result = await registerCommunity(env, env.DB, input.identifier, input.password);
+			const result = await registerCommunity(env, env.DB, input.shortHandle);
 			return { ok: true, did: result.did, handle: result.handle };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
@@ -61,7 +82,7 @@ export const getCommunity = command(
 		const env = platform?.env;
 		if (!env || !env.DB) return null;
 
-		const row = await getCommunityByHandle(env.DB, input.handle);
+		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
 		return row ? sanitize(row) : null;
 	}
 );
@@ -73,7 +94,7 @@ export const getCommunityPosts = command(
 		const env = platform?.env;
 		if (!env || !env.DB) return [];
 
-		const row = await getCommunityByHandle(env.DB, input.handle);
+		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
 		if (!row) return [];
 
 		return getRecentPostsForCommunity(env.DB, row.did, input.limit ?? 50);

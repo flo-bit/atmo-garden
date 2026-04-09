@@ -1,5 +1,5 @@
 {
-	"name": "atmo-social",
+	"name": "atmo-garden",
 	"private": true,
 	"version": "0.1.0",
 	"type": "module",
@@ -59,6 +59,8 @@
 		"@foxui/text": "^0.8.2",
 		"@foxui/time": "^0.8.2",
 		"@lucide/svelte": "^1.7.0",
+		"@noble/curves": "^2.0.1",
+		"@noble/hashes": "^2.0.1",
 		"@tailwindcss/typography": "^0.5.19",
 		"@use-gesture/vanilla": "^10.3.1",
 		"emoji-picker-element": "^1.29.1",

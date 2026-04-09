@@ -6,8 +6,10 @@ export type CommunityRow = {
 	did: Did;
 	handle: string;
 	pds: string;
-	password_ciphertext: string;
-	password_iv: string;
+	secret_key_ciphertext: string;
+	secret_key_iv: string;
+	public_jwk_json: string;
+	thumbprint: string;
 	display_name: string | null;
 	avatar: string | null;
 	description: string | null;
@@ -38,7 +40,7 @@ export type PostWithCommunity = PostRow & {
 export async function listCommunities(db: D1Database): Promise<CommunityRow[]> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, password_ciphertext, password_iv, display_name, avatar, description, created_at FROM communities ORDER BY created_at DESC'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, created_at FROM communities ORDER BY created_at DESC'
 		)
 		.all<CommunityRow>();
 	return res.results ?? [];
@@ -50,7 +52,7 @@ export async function getCommunityByHandle(
 ): Promise<CommunityRow | null> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, password_ciphertext, password_iv, display_name, avatar, description, created_at FROM communities WHERE handle = ?'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, created_at FROM communities WHERE handle = ?'
 		)
 		.bind(handle)
 		.first<CommunityRow>();
@@ -63,7 +65,7 @@ export async function getCommunityByDid(
 ): Promise<CommunityRow | null> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, password_ciphertext, password_iv, display_name, avatar, description, created_at FROM communities WHERE did = ?'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, created_at FROM communities WHERE did = ?'
 		)
 		.bind(did)
 		.first<CommunityRow>();
@@ -76,14 +78,16 @@ export async function insertCommunity(
 ): Promise<void> {
 	await db
 		.prepare(
-			'INSERT INTO communities (did, handle, pds, password_ciphertext, password_iv, display_name, avatar, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+			'INSERT INTO communities (did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 		)
 		.bind(
 			row.did,
 			row.handle,
 			row.pds,
-			row.password_ciphertext,
-			row.password_iv,
+			row.secret_key_ciphertext,
+			row.secret_key_iv,
+			row.public_jwk_json,
+			row.thumbprint,
 			row.display_name,
 			row.avatar,
 			row.description
@@ -191,23 +195,6 @@ export async function getCombinedFeed(
 		.bind(limit)
 		.all<PostWithCommunity>();
 	return res.results ?? [];
-}
-
-export async function getMeta(db: D1Database, key: string): Promise<string | null> {
-	const res = await db
-		.prepare('SELECT value FROM meta WHERE key = ?')
-		.bind(key)
-		.first<{ value: string }>();
-	return res?.value ?? null;
-}
-
-export async function setMeta(db: D1Database, key: string, value: string): Promise<void> {
-	await db
-		.prepare(
-			'INSERT INTO meta (key, value, updated_at) VALUES (?, ?, datetime("now")) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-		)
-		.bind(key, value)
-		.run();
 }
 
 // Posts due for metric refresh based on age-decayed cadence.

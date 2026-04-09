@@ -1,11 +1,19 @@
--- Community accounts we manage.
--- password_ciphertext + password_iv: AES-GCM encrypted app password.
+-- Community accounts we manage. Each row represents a rookery-hosted
+-- account with a secp256k1 WelcomeMat keypair.
+--
+-- Key storage:
+--   secret_key_ciphertext + secret_key_iv — AES-GCM encrypted hex-encoded
+--     secp256k1 secret key (32 bytes → 64 hex chars → ~90 bytes encrypted)
+--   public_jwk_json — serialized EC public JWK
+--   thumbprint — RFC 7638 JWK thumbprint (the account's DPoP identity)
 CREATE TABLE communities (
 	did TEXT PRIMARY KEY,
 	handle TEXT NOT NULL,
 	pds TEXT NOT NULL,
-	password_ciphertext TEXT NOT NULL,
-	password_iv TEXT NOT NULL,
+	secret_key_ciphertext TEXT NOT NULL,
+	secret_key_iv TEXT NOT NULL,
+	public_jwk_json TEXT NOT NULL,
+	thumbprint TEXT NOT NULL,
 	display_name TEXT,
 	avatar TEXT,
 	description TEXT,
@@ -37,10 +45,3 @@ CREATE INDEX idx_posts_refresh ON posts(last_refreshed_at);
 
 -- Dedup: never create two quote posts for the same (community, quoted post).
 CREATE UNIQUE INDEX idx_posts_community_quoted ON posts(community_did, quoted_post_uri);
-
--- Simple key/value meta store (for curate list URI, etc).
-CREATE TABLE meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL,
-	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);

@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "atmo-social",
+	"name": "atmo-garden",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"compatibility_date": "2025-12-25",
 	"compatibility_flags": ["nodejs_compat_v2"],
@@ -12,7 +12,8 @@
 		"enabled": true
 	},
 	"vars": {
-		"OAUTH_PUBLIC_URL": "https://atmo.social"
+		"OAUTH_PUBLIC_URL": "https://atmo.social",
+		"ROOKERY_HOSTNAME": "pds.atmo.garden"
 	},
 	"kv_namespaces": [
 		{
@@ -27,8 +28,8 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "atmo-social-db",
-			"database_id": "REPLACE_ME_WITH_D1_ID",
+			"database_name": "atmo-garden-db",
+			"database_id": "bd23d3c4-8845-4b45-881f-72665088104e",
 			"migrations_dir": "migrations"
 		}
 	],

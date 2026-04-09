@@ -23,5 +23,16 @@
 			"binding": "OAUTH_STATES",
 			"id": "8cff96d0d78f4966a09b6b8833cab54e"
 		}
-	]
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "atmo-social-db",
+			"database_id": "REPLACE_ME_WITH_D1_ID",
+			"migrations_dir": "migrations"
+		}
+	],
+	"triggers": {
+		"crons": ["* * * * *"]
+	}
 }

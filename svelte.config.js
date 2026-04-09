@@ -6,7 +6,15 @@ const config = {
 	preprocess: vitePreprocess(),
 
 	kit: {
-		adapter: adapter(),
+		adapter: adapter({
+			// Expose wrangler.jsonc bindings (D1, KV, vars) as platform.env
+			// during `vite dev`. See
+			// https://svelte.dev/docs/kit/adapter-cloudflare#Bindings
+			platformProxy: {
+				configPath: 'wrangler.jsonc',
+				persist: true
+			}
+		}),
 		experimental: {
 			remoteFunctions: true
 		}

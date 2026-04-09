@@ -35,6 +35,22 @@ export const listConvos = command(
 	}
 );
 
+export const getConvo = command(
+	v.object({
+		convoId: v.string()
+	}),
+	async (input) => {
+		const client = getChatClient();
+
+		const res = await client.get('chat.bsky.convo.getConvo', {
+			params: { convoId: input.convoId }
+		});
+
+		if (!res.ok) error(res.status, 'Failed to load conversation');
+		return res.data.convo;
+	}
+);
+
 export const getMessages = command(
 	v.object({
 		convoId: v.string(),

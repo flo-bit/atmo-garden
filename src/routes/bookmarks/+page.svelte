@@ -3,38 +3,25 @@
 	import { user } from '$lib/atproto/auth.svelte';
 	import { ArrowLeft } from '@lucide/svelte';
 	import { getBookmarks } from '$lib/atproto/server/feed.remote';
-	import { ingestPosts, prefetchThread } from '$lib/cache.svelte';
-	import ScrollablePostList, { getCachedList, setCachedList } from '$lib/components/ScrollablePostList.svelte';
+	import ScrollablePostList from '$lib/components/ScrollablePostList.svelte';
+	import type { FeedItem } from '$lib/components/PostList.svelte';
 
-	const CACHE_KEY = 'bookmarks';
-
-	let postUris = $state<string[]>([]);
+	let items = $state<FeedItem[]>([]);
 	let cursor = $state<string | null>(null);
 	let loading = $state(true);
 	let loadingMore = $state(false);
 
 	onMount(async () => {
-		if (!user.did) return;
-
-		// Restore from cache for instant display
-		const cached = await getCachedList(CACHE_KEY);
-		if (cached) {
-			postUris = cached.items as string[];
-			cursor = cached.cursor;
+		if (!user.did) {
 			loading = false;
+			return;
 		}
 
-		// Fetch fresh in background
 		try {
 			const result = await getBookmarks({});
-			const freshUris = ingestPosts(result.posts);
-			for (const uri of freshUris) prefetchThread(uri);
-			// Only update visible list if we didn't show cached (avoid layout shift while scrolled)
-			if (!cached) {
-				postUris = freshUris;
-				cursor = result.cursor;
-			}
-			setCachedList(CACHE_KEY, freshUris, result.cursor);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			items = (result.posts as any[]).map((p) => ({ post: p.post ?? p }));
+			cursor = result.cursor;
 		} catch (e) {
 			console.error('Failed to load bookmarks:', e);
 		} finally {
@@ -47,11 +34,10 @@
 		loadingMore = true;
 		try {
 			const result = await getBookmarks({ cursor });
-			const newUris = ingestPosts(result.posts);
-			for (const uri of newUris) prefetchThread(uri);
-			postUris = [...postUris, ...newUris];
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const newItems = (result.posts as any[]).map((p) => ({ post: p.post ?? p }));
+			items = [...items, ...newItems];
 			cursor = result.cursor;
-			setCachedList(CACHE_KEY, postUris, cursor);
 		} catch (e) {
 			console.error('Failed to load more bookmarks:', e);
 		} finally {
@@ -73,11 +59,10 @@
 		</div>
 
 		<ScrollablePostList
-			items={postUris}
+			{items}
 			{loading}
 			{loadingMore}
 			hasMore={!!cursor}
-			cacheKey={CACHE_KEY}
 			onLoadMore={loadMore}
 			emptyText="No bookmarks yet"
 		/>

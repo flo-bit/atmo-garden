@@ -8,7 +8,6 @@
 	import { Avatar } from '@foxui/core';
 	import { listConvos } from '$lib/atproto/server/chat.remote';
 	import { loginModalState } from '$lib/LoginModal.svelte';
-	import { convoCache, prefetchChats } from '$lib/cache.svelte';
 	import type { ChatBskyConvoDefs } from '@atcute/bluesky';
 
 	type ConvoView = ChatBskyConvoDefs.ConvoView;
@@ -16,9 +15,11 @@
 	let { children } = $props();
 
 	let tab = $state<'accepted' | 'request'>('accepted');
-	let loading = $derived(!convoCache.loaded);
+	let loading = $state(true);
 	let refreshing = $state(false);
-	let displayedConvos = $derived(tab === 'accepted' ? convoCache.acceptedConvos : convoCache.requestConvos);
+	let acceptedConvos = $state<ConvoView[]>([]);
+	let requestConvos = $state<ConvoView[]>([]);
+	let displayedConvos = $derived(tab === 'accepted' ? acceptedConvos : requestConvos);
 
 	let activeConvoId = $derived(page.params.convoId ?? null);
 	let isInConvo = $derived(!!activeConvoId);
@@ -30,27 +31,21 @@
 				listConvos({ status: 'accepted' }),
 				listConvos({ status: 'request' })
 			]);
-			convoCache.acceptedConvos = accepted.convos as ConvoView[];
-			convoCache.requestConvos = requests.convos as ConvoView[];
-			convoCache.loaded = true;
+			acceptedConvos = accepted.convos as ConvoView[];
+			requestConvos = requests.convos as ConvoView[];
 		} catch (e) {
 			console.error('Failed to load conversations:', e);
-			convoCache.loaded = true;
 		} finally {
 			refreshing = false;
+			loading = false;
 		}
 	}
 
 	onMount(() => {
 		if (user.did) {
-			if (convoCache.loaded) {
-				// Already cached, refresh in background
-				refreshConvos();
-			} else {
-				prefetchChats();
-			}
+			refreshConvos();
 		} else {
-			convoCache.loaded = true;
+			loading = false;
 		}
 	});
 
@@ -141,9 +136,9 @@
 						: 'text-base-500 hover:text-base-700 dark:text-base-400 dark:hover:text-base-200'}"
 				>
 					Requests
-					{#if convoCache.requestConvos.length > 0}
+					{#if requestConvos.length > 0}
 						<span class="bg-accent-500 ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-medium text-white">
-							{convoCache.requestConvos.length}
+							{requestConvos.length}
 						</span>
 					{/if}
 				</button>

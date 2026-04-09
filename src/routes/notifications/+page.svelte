@@ -4,7 +4,6 @@
 	import { goto } from '$app/navigation';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
-	import { notificationsCache, prefetchNotifications, postMap } from '$lib/cache.svelte';
 	import { listNotifications, updateSeen } from '$lib/atproto/server/notifications.remote';
 	import { getPostHref } from '$lib/utils/post-href';
 	import { blueskyPostToPostData } from '$lib/components';
@@ -26,7 +25,9 @@
 		_page: number;
 	}
 
-	let loading = $derived(!notificationsCache.loaded);
+	let notifications = $state<Notification[]>([]);
+	let notifCursor = $state<string | null>(null);
+	let loading = $state(true);
 	let loadingMore = $state(false);
 	let refreshing = $state(false);
 	// Track indices where new pages of notifications begin (don't group across pages)
@@ -36,7 +37,7 @@
 	const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
 	let grouped = $derived.by(() => {
-		const notifs = notificationsCache.notifications;
+		const notifs = notifications;
 		const groups: GroupedNotification[] = [];
 		const groupableReasons = ['like', 'like-via-repost', 'repost', 'repost-via-repost', 'follow'];
 
@@ -88,40 +89,30 @@
 		return groups;
 	});
 
-	async function loadInitial() {
-		try {
-			await prefetchNotifications();
-		} catch (e) {
-			console.error('Failed to load notifications:', e);
-			notificationsCache.loaded = true;
-		}
-	}
-
 	async function refresh() {
 		refreshing = true;
 		loadMoreIndices = [];
 		try {
 			const result = await listNotifications({});
-			notificationsCache.notifications = result.notifications as Notification[];
-			notificationsCache.cursor = result.cursor;
-			notificationsCache.seenAt = result.seenAt;
-			notificationsCache.loaded = true;
+			notifications = result.notifications as Notification[];
+			notifCursor = result.cursor;
 		} catch (e) {
 			console.error('Failed to refresh notifications:', e);
 		} finally {
 			refreshing = false;
+			loading = false;
 		}
 	}
 
 	async function loadMore() {
-		if (loadingMore || !notificationsCache.cursor) return;
+		if (loadingMore || !notifCursor) return;
 		loadingMore = true;
 		try {
-			const result = await listNotifications({ cursor: notificationsCache.cursor });
+			const result = await listNotifications({ cursor: notifCursor });
 			const newNotifs = result.notifications as Notification[];
-			const boundaryIndex = notificationsCache.notifications.length;
-			notificationsCache.notifications = [...notificationsCache.notifications, ...newNotifs];
-			notificationsCache.cursor = result.cursor;
+			const boundaryIndex = notifications.length;
+			notifications = [...notifications, ...newNotifs];
+			notifCursor = result.cursor;
 			loadMoreIndices = [...loadMoreIndices, boundaryIndex];
 		} catch (e) {
 			console.error('Failed to load more notifications:', e);
@@ -131,7 +122,7 @@
 	}
 
 	function handleScroll() {
-		if (loadingMore || !notificationsCache.cursor) return;
+		if (loadingMore || !notifCursor) return;
 		const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
 		if (scrollHeight - scrollTop - clientHeight < 800) {
 			loadMore();
@@ -140,15 +131,10 @@
 
 	onMount(() => {
 		if (user.did) {
-			if (notificationsCache.loaded) {
-				refresh();
-			} else {
-				loadInitial();
-			}
-			notificationsCache.unreadCount = 0;
+			refresh();
 			updateSeen({}).catch(() => {});
 		} else {
-			notificationsCache.loaded = true;
+			loading = false;
 		}
 
 		window.addEventListener('scroll', handleScroll);
@@ -249,26 +235,14 @@
 		}
 
 		if (group.reasonSubject) {
-			const cached = postMap.get(group.reasonSubject);
-			if (cached) {
-				goto(getPostHref(cached));
-			} else {
-				const parts = group.reasonSubject.split('/');
-				const rkey = parts[parts.length - 1];
-				const did = parts[2];
-				goto(`/profile/${user.profile?.handle ?? did}/post/${rkey}`);
-			}
+			const parts = group.reasonSubject.split('/');
+			const rkey = parts[parts.length - 1];
+			const did = parts[2];
+			goto(`/profile/${user.profile?.handle ?? did}/post/${rkey}`);
 		}
 	}
 
 	function getSubjectPostText(group: GroupedNotification): string {
-		// For like/repost, try to get the subject post text from postMap
-		if (group.reasonSubject) {
-			const cached = postMap.get(group.reasonSubject);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const text = (cached?.record as any)?.text;
-			if (text) return text.length > 150 ? text.slice(0, 150) + '...' : text;
-		}
 		// For reply/quote/mention, the notification record is the post
 		const notif = group.notifications[0];
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -427,7 +401,7 @@
 					</div>
 				{/if}
 
-				{#if !notificationsCache.cursor && notificationsCache.notifications.length > 0}
+				{#if !notifCursor && notifications.length > 0}
 					<p class="text-base-400 py-6 text-center text-sm">You've reached the end</p>
 				{/if}
 

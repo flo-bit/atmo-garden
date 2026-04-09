@@ -3,18 +3,16 @@
 	import { page } from '$app/state';
 	import { Search, Loader2 } from '@lucide/svelte';
 	import { searchPosts } from '$lib/atproto/server/feed.remote';
-	import { prefetchThread, ingestPosts } from '$lib/cache.svelte';
-	import ScrollablePostList, { getCachedList, setCachedList } from '$lib/components/ScrollablePostList.svelte';
+	import ScrollablePostList from '$lib/components/ScrollablePostList.svelte';
+	import type { FeedItem } from '$lib/components/PostList.svelte';
 
 	let query = $state(page.url.searchParams.get('q') ?? '');
 	let inputValue = $state(query);
-	let postUris = $state<string[]>([]);
+	let items = $state<FeedItem[]>([]);
 	let cursor = $state<string | null>(null);
 	let loading = $state(false);
 	let loadingMore = $state(false);
 	let searched = $state(false);
-
-	let cacheKey = $derived(`search-${query}`);
 
 	async function doSearch(q: string) {
 		if (!q.trim()) return;
@@ -25,25 +23,15 @@
 		url.searchParams.set('q', query);
 		history.replaceState({}, '', url);
 
-		// Restore from cache
-		const cached = await getCachedList(`search-${query}`);
-		if (cached) {
-			postUris = cached.items as string[];
-			cursor = cached.cursor;
-			loading = false;
-			return; // show cached, no background refresh for search
-		}
-
 		loading = true;
-		postUris = [];
+		items = [];
 		cursor = null;
 
 		try {
 			const result = await searchPosts({ q: query });
-			postUris = ingestPosts(result.posts);
-			for (const uri of postUris) prefetchThread(uri);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			items = (result.posts as any[]).map((p) => ({ post: p }));
 			cursor = result.cursor;
-			setCachedList(`search-${query}`, postUris, cursor);
 		} catch (e) {
 			console.error('Search failed:', e);
 		} finally {
@@ -56,11 +44,10 @@
 		loadingMore = true;
 		try {
 			const result = await searchPosts({ q: query, cursor });
-			const newUris = ingestPosts(result.posts);
-			for (const uri of newUris) prefetchThread(uri);
-			postUris = [...postUris, ...newUris];
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const newItems = (result.posts as any[]).map((p) => ({ post: p }));
+			items = [...items, ...newItems];
 			cursor = result.cursor;
-			setCachedList(`search-${query}`, postUris, cursor);
 		} catch (e) {
 			console.error('Failed to load more:', e);
 		} finally {
@@ -96,17 +83,16 @@
 			<div class="flex items-center justify-center py-12">
 				<Loader2 class="text-base-400 animate-spin" size={28} />
 			</div>
-		{:else if searched && postUris.length === 0}
+		{:else if searched && items.length === 0}
 			<div class="flex flex-col items-center justify-center py-20">
 				<Search class="text-base-300 dark:text-base-600 mb-3" size={40} />
 				<p class="text-base-400 text-sm">No results for "{query}"</p>
 			</div>
-		{:else if postUris.length > 0}
+		{:else if items.length > 0}
 			<ScrollablePostList
-				items={postUris}
+				{items}
 				{loadingMore}
 				hasMore={!!cursor}
-				cacheKey="search-{query}"
 				onLoadMore={loadMore}
 				endText="No more results"
 			/>

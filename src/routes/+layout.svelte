@@ -1,12 +1,13 @@
 <script lang="ts">
 	import '../app.css';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import { Head, Avatar, Button, ThemeToggle } from '@foxui/core';
 	import { House, MessageCircle, Bell, Search, Bookmark, Settings, Menu, X } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { user } from '$lib/atproto/auth.svelte';
-	import { notificationsCache, startUnreadPoll, stopUnreadPoll, chatUnreadCount, startChatPoll, stopChatPoll, applyPendingFeed, startFeedPoll, stopFeedPoll, hydrateFromDb } from '$lib/cache.svelte';
+	import { getUnreadCount } from '$lib/atproto/server/notifications.remote';
+	import { listConvos } from '$lib/atproto/server/chat.remote';
 	import LoginModal, { loginModalState } from '$lib/LoginModal.svelte';
 	import ImageLightbox from '$lib/components/embed/ImageLightbox.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
@@ -14,6 +15,8 @@
 	let { children } = $props();
 
 	let menuOpen = $state(false);
+	let notifUnread = $state(0);
+	let chatUnread = $state(0);
 	let path = $derived(page.url?.pathname ?? '/');
 	function isActive(href: string): boolean {
 		if (href === '/') return path === '/';
@@ -24,23 +27,23 @@
 	}
 
 	onMount(async () => {
-		await hydrateFromDb();
-		if (user.did) {
-			startUnreadPoll();
-			startChatPoll();
-			startFeedPoll();
+		if (!user.did) return;
+		try {
+			const [notifRes, convosRes] = await Promise.all([
+				getUnreadCount({}),
+				listConvos({ status: 'accepted' })
+			]);
+			notifUnread = notifRes.count;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			chatUnread = (convosRes.convos as any[]).reduce((s, c) => s + (c.unreadCount ?? 0), 0);
+		} catch {
+			// silent
 		}
-	});
-
-	onDestroy(() => {
-		stopUnreadPoll();
-		stopChatPoll();
-		stopFeedPoll();
 	});
 </script>
 
 <Sidebar>
-	<Button href="/" onmousedown={(e: MouseEvent) => { e.preventDefault(); applyPendingFeed(); window.scrollTo(0, 0); goto('/'); }} variant="ghost" size="icon" class={navClass('/')}>
+	<Button href="/" onmousedown={(e: MouseEvent) => { e.preventDefault(); window.scrollTo(0, 0); goto('/'); }} variant="ghost" size="icon" class={navClass('/')}>
 		<House size={20} strokeWidth={isActive('/') ? 2.5 : 2} />
 	</Button>
 	<Button href="/search" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/search'); }} variant="ghost" size="icon" class={navClass('/search')}>
@@ -48,17 +51,17 @@
 	</Button>
 	<Button href="/chat" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/chat'); }} variant="ghost" size="icon" class="relative {navClass('/chat')}">
 		<MessageCircle size={20} strokeWidth={isActive('/chat') ? 2.5 : 2} />
-		{#if chatUnreadCount.count > 0}
+		{#if chatUnread > 0}
 			<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-				{chatUnreadCount.count > 99 ? '99+' : chatUnreadCount.count}
+				{chatUnread > 99 ? '99+' : chatUnread}
 			</span>
 		{/if}
 	</Button>
 	<Button href="/notifications" onmousedown={(e: MouseEvent) => { e.preventDefault(); goto('/notifications'); }} variant="ghost" size="icon" class="relative {navClass('/notifications')}">
 		<Bell size={20} strokeWidth={isActive('/notifications') ? 2.5 : 2} />
-		{#if notificationsCache.unreadCount > 0}
+		{#if notifUnread > 0}
 			<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-				{notificationsCache.unreadCount > 99 ? '99+' : notificationsCache.unreadCount}
+				{notifUnread > 99 ? '99+' : notifUnread}
 			</span>
 		{/if}
 	</Button>
@@ -106,7 +109,7 @@
 			</button>
 			<a
 				href="/"
-				onmousedown={(e) => { e.preventDefault(); menuOpen = false; applyPendingFeed(); window.scrollTo(0, 0); goto('/'); }}
+				onmousedown={(e) => { e.preventDefault(); menuOpen = false; window.scrollTo(0, 0); goto('/'); }}
 				class="flex items-center gap-3 rounded-full px-4 py-2 text-sm transition-colors {navClass('/')}"
 			>
 				<House size={20} strokeWidth={isActive('/') ? 2.5 : 2} />
@@ -127,9 +130,9 @@
 			>
 				<MessageCircle size={20} strokeWidth={isActive('/chat') ? 2.5 : 2} />
 				<span class="font-medium">Messages</span>
-				{#if chatUnreadCount.count > 0}
+				{#if chatUnread > 0}
 					<span class="bg-accent-500 ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white">
-						{chatUnreadCount.count > 99 ? '99+' : chatUnreadCount.count}
+						{chatUnread > 99 ? '99+' : chatUnread}
 					</span>
 				{/if}
 			</a>
@@ -140,9 +143,9 @@
 			>
 				<Bell size={20} strokeWidth={isActive('/notifications') ? 2.5 : 2} />
 				<span class="font-medium">Notifications</span>
-				{#if notificationsCache.unreadCount > 0}
+				{#if notifUnread > 0}
 					<span class="bg-accent-500 ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white">
-						{notificationsCache.unreadCount > 99 ? '99+' : notificationsCache.unreadCount}
+						{notifUnread > 99 ? '99+' : notifUnread}
 					</span>
 				{/if}
 			</a>
@@ -179,7 +182,7 @@
 		<div class="flex items-center justify-around">
 			<a
 				href="/"
-				onmousedown={(e) => { e.preventDefault(); applyPendingFeed(); window.scrollTo(0, 0); goto('/'); }}
+				onmousedown={(e) => { e.preventDefault(); window.scrollTo(0, 0); goto('/'); }}
 				class="flex items-center justify-center p-2 {navClass('/')}"
 			>
 				<House size={22} strokeWidth={isActive('/') ? 2.5 : 2} />
@@ -190,9 +193,9 @@
 				class="relative flex items-center justify-center p-2 {navClass('/chat')}"
 			>
 				<MessageCircle size={22} strokeWidth={isActive('/chat') ? 2.5 : 2} />
-				{#if chatUnreadCount.count > 0}
+				{#if chatUnread > 0}
 					<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-						{chatUnreadCount.count > 99 ? '99+' : chatUnreadCount.count}
+						{chatUnread > 99 ? '99+' : chatUnread}
 					</span>
 				{/if}
 			</a>
@@ -202,9 +205,9 @@
 				class="relative flex items-center justify-center p-2 {navClass('/notifications')}"
 			>
 				<Bell size={22} strokeWidth={isActive('/notifications') ? 2.5 : 2} />
-				{#if notificationsCache.unreadCount > 0}
+				{#if notifUnread > 0}
 					<span class="bg-accent-500 absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white">
-						{notificationsCache.unreadCount > 99 ? '99+' : notificationsCache.unreadCount}
+						{notifUnread > 99 ? '99+' : notifUnread}
 					</span>
 				{/if}
 			</a>

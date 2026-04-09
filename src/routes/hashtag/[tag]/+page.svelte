@@ -3,35 +3,25 @@
 	import { page } from '$app/state';
 	import { Hash } from '@lucide/svelte';
 	import { searchPosts } from '$lib/atproto/server/feed.remote';
-	import { prefetchThread, ingestPosts } from '$lib/cache.svelte';
-	import ScrollablePostList, { getCachedList, setCachedList } from '$lib/components/ScrollablePostList.svelte';
+	import ScrollablePostList from '$lib/components/ScrollablePostList.svelte';
+	import type { FeedItem } from '$lib/components/PostList.svelte';
 
 	let tag = $derived(page.params.tag);
 
-	let postUris = $state<string[]>([]);
+	let items = $state<FeedItem[]>([]);
 	let cursor = $state<string | null>(null);
 	let loading = $state(true);
 	let loadingMore = $state(false);
 
 	async function loadTag(t: string) {
-		const key = `hashtag-${t}`;
-		const cached = await getCachedList(key);
-		if (cached) {
-			postUris = cached.items as string[];
-			cursor = cached.cursor;
-			loading = false;
-			return;
-		}
-
 		loading = true;
-		postUris = [];
+		items = [];
 		cursor = null;
 		try {
 			const result = await searchPosts({ q: `#${t}` });
-			postUris = ingestPosts(result.posts);
-			for (const uri of postUris) prefetchThread(uri);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			items = (result.posts as any[]).map((p) => ({ post: p }));
 			cursor = result.cursor;
-			setCachedList(key, postUris, cursor);
 		} catch (e) {
 			console.error('Failed to load hashtag:', e);
 		} finally {
@@ -44,11 +34,10 @@
 		loadingMore = true;
 		try {
 			const result = await searchPosts({ q: `#${tag}`, cursor });
-			const newUris = ingestPosts(result.posts);
-			for (const uri of newUris) prefetchThread(uri);
-			postUris = [...postUris, ...newUris];
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const newItems = (result.posts as any[]).map((p) => ({ post: p }));
+			items = [...items, ...newItems];
 			cursor = result.cursor;
-			setCachedList(`hashtag-${tag}`, postUris, cursor);
 		} catch (e) {
 			console.error('Failed to load more:', e);
 		} finally {
@@ -70,11 +59,10 @@
 		</div>
 
 		<ScrollablePostList
-			items={postUris}
+			{items}
 			{loading}
 			{loadingMore}
 			hasMore={!!cursor}
-			cacheKey={`hashtag-${tag}`}
 			onLoadMore={loadMore}
 			emptyText={`No posts with #${tag}`}
 			endText="No more results"

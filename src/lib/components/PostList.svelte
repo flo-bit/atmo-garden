@@ -1,3 +1,8 @@
+<script lang="ts" module>
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	export type FeedItem = { post: any; reason?: any; reply?: any };
+</script>
+
 <script lang="ts">
 	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { goto } from '$app/navigation';
@@ -5,40 +10,30 @@
 	import { blueskyPostToPostData } from '$lib/components';
 	import { Post } from '$lib/components';
 	import { wireEmbedClicks } from '$lib/components/embed';
-	import { postMap } from '$lib/cache.svelte';
 	import { getPostHref } from '$lib/utils/post-href';
-	import { isLiked, isBookmarked, getLikeCount, toggleLike, toggleBookmark } from '$lib/actions.svelte';
-	import type { FeedItem } from '$lib/cache.svelte';
-
-	type PostListItem = FeedItem | string;
+	import { toggleLike, toggleBookmark } from '$lib/actions.svelte';
 
 	let {
 		items,
 		showDividers = true
 	}: {
-		items: PostListItem[];
+		items: FeedItem[];
 		showDividers?: boolean;
 	} = $props();
 
-	function getUri(item: PostListItem): string {
-		return typeof item === 'string' ? item : item.uri;
-	}
-
-	function getReason(item: PostListItem) {
-		return typeof item === 'string' ? undefined : item.reason;
-	}
-
-	function getReply(item: PostListItem) {
-		return typeof item === 'string' ? undefined : item.reply;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function getPost(item: FeedItem): any {
+		// Accepts either FeedViewPost ({ post, reason, reply }) or bare PostView
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		return (item as any)?.post ?? item;
 	}
 </script>
 
 <div>
-	{#each items as item, i (getUri(item) + '-' + i)}
-		{@const uri = getUri(item)}
-		{@const post = postMap.get(uri)}
+	{#each items as item, i (getPost(item)?.uri + '-' + i)}
+		{@const post = getPost(item)}
 		{#if post?.uri && post?.author}
-			{@const { postData, embeds } = blueskyPostToPostData(post, 'https://bsky.app', getReason(item), getReply(item))}
+			{@const { postData, embeds } = blueskyPostToPostData(post, 'https://bsky.app', item.reason, item.reply)}
 			{@const postHref = getPostHref(post)}
 			<div
 				class="-mx-2 rounded-xl px-6 pt-3 pb-2 transition-colors hover:bg-base-100/50 sm:px-2 dark:hover:bg-base-800/30"
@@ -60,13 +55,13 @@
 									count: postData.repostCount
 								},
 								like: {
-									count: getLikeCount(post.uri),
-									active: isLiked(post.uri),
-									onclick: () => toggleLike(post.uri, post.cid)
+									count: post.likeCount ?? 0,
+									active: !!post.viewer?.like,
+									onclick: () => toggleLike(post)
 								},
 								bookmark: {
-									active: isBookmarked(post.uri),
-									onclick: () => toggleBookmark(post.uri, post.cid)
+									active: !!post.viewer?.bookmarked,
+									onclick: () => toggleBookmark(post)
 								}
 							}
 						: {

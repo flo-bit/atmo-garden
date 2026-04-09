@@ -53,16 +53,12 @@ export async function resolveHandle({ handle }: { handle: Handle }): Promise<Did
 	return await handleResolver.resolve(handle);
 }
 
-import { getDid } from '$lib/db.svelte';
-
 /**
  * Returns a DID given a handle or DID string.
  */
 export async function actorToDid(actor: string): Promise<Did> {
-	return getDid(actor, async (handle) => {
-		const did = await resolveHandle({ handle: handle as Handle });
-		return did;
-	});
+	if (isDid(actor)) return actor;
+	return resolveHandle({ handle: actor as Handle });
 }
 
 const didResolver = new CompositeDidDocumentResolver({

@@ -4,8 +4,7 @@
 	import { user } from '$lib/atproto/auth.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { getMessages, sendMessage, acceptConvo, updateRead, addReaction, removeReaction, deleteMessage } from '$lib/atproto/server/chat.remote';
-	import { convoCache, getCachedMessages, setCachedMessages, markConvoRead } from '$lib/cache.svelte';
+	import { getMessages, sendMessage, acceptConvo, updateRead, addReaction, removeReaction, deleteMessage, getConvo } from '$lib/atproto/server/chat.remote';
 	import type { ChatBskyConvoDefs } from '@atcute/bluesky';
 	import { ArrowLeft, Send, Loader2, SmilePlus, Trash2 } from '@lucide/svelte';
 	import { Avatar, sanitize } from '@foxui/core';
@@ -147,7 +146,6 @@
 			const msgsRes = await getMessages({ convoId });
 			messages = msgsRes.messages;
 			cursor = msgsRes.cursor;
-			setCachedMessages(convoId, messages);
 			extraMessages = [];
 		} catch (e) {
 			console.error('Failed to toggle reaction:', e);
@@ -171,7 +169,6 @@
 					: m
 			);
 			extraMessages = extraMessages.filter((m) => m.id !== messageId);
-			setCachedMessages(convoId, messages);
 		} catch (e) {
 			console.error('Failed to delete message:', e);
 		} finally {
@@ -188,28 +185,18 @@
 	}
 
 	async function loadConvo() {
-		const allConvos = [...convoCache.acceptedConvos, ...convoCache.requestConvos];
-		convo = allConvos.find((c) => c.id === convoId) ?? null;
-
-		const cached = await getCachedMessages(convoId);
-		if (cached) {
-			messages = cached;
-			loading = false;
-			extraMessages = [];
-			requestAnimationFrame(scrollToBottom);
-		} else {
-			loading = true;
-		}
-
+		loading = true;
 		try {
-			const msgsRes = await getMessages({ convoId });
+			const [convoRes, msgsRes] = await Promise.all([
+				getConvo({ convoId }),
+				getMessages({ convoId })
+			]);
+			convo = convoRes as ConvoView;
 			messages = msgsRes.messages;
 			cursor = msgsRes.cursor;
-			setCachedMessages(convoId, messages);
 			extraMessages = [];
 
 			updateRead({ convoId }).catch(() => {});
-			markConvoRead(convoId);
 			requestAnimationFrame(scrollToBottom);
 		} catch (e) {
 			console.error('Failed to load conversation:', e);
@@ -226,7 +213,6 @@
 			const res = await getMessages({ convoId, cursor });
 			messages = [...messages, ...res.messages];
 			cursor = res.cursor;
-			setCachedMessages(convoId, messages);
 			requestAnimationFrame(() => {
 				if (messagesContainer) {
 					messagesContainer.scrollTop = messagesContainer.scrollHeight - prevHeight;

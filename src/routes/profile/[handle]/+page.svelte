@@ -1,17 +1,13 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { UserProfile } from '$lib/components';
 	import { Button } from '@foxui/core';
 	import { Loader2, LogOut } from '@lucide/svelte';
 	import { user, logout } from '$lib/atproto/auth.svelte';
-	import { actorToDid } from '$lib/atproto/methods';
-	import { getCachedProfile, cacheProfile, prefetchThread, ingestFeedPosts } from '$lib/cache.svelte';
 	import { getAuthorFeed, followUser, unfollowUser, getProfile } from '$lib/atproto/server/feed.remote';
-	import type { FeedItem } from '$lib/cache.svelte';
-	import ScrollablePostList, { getCachedList, setCachedList } from '$lib/components/ScrollablePostList.svelte';
-	import PostList from '$lib/components/PostList.svelte';
+	import ScrollablePostList from '$lib/components/ScrollablePostList.svelte';
+	import PostList, { type FeedItem } from '$lib/components/PostList.svelte';
 
 	import { UserPlus, UserCheck } from '@lucide/svelte';
 
@@ -34,7 +30,7 @@
 	let loadingMore = $state(false);
 
 	// Top posts state
-	let topPostUris = $state<string[]>([]);
+	let topPosts = $state<FeedItem[]>([]);
 	let topPostsLoading = $state(false);
 
 	async function toggleFollow() {
@@ -61,73 +57,40 @@
 		return `${(n / 1_000_000).toFixed(1)}m`;
 	}
 
-	let listKey = $derived(`profile-${page.params.handle}`);
-
 	async function loadProfile(actor: string) {
 		error = null;
 		followUri = null;
 		followsMe = false;
-		topPostUris = [];
+		topPosts = [];
 		topPostsLoading = false;
+		profile = null;
+		loading = true;
+		feedItems = [];
+		postsCursor = null;
+		postsLoading = true;
 
-		const key = `profile-${actor}`;
-
-		// Resolve DID for API calls
-		const did = await actorToDid(actor);
-
-		// Restore from caches first for instant display
-		const [cached, cachedList] = await Promise.all([
-			getCachedProfile(actor),
-			getCachedList(key)
-		]);
-
-		if (cached) {
-			profile = cached;
-			loading = false;
-		} else {
-			profile = null;
-			loading = true;
-		}
-
-		if (cachedList) {
-			feedItems = cachedList.items as FeedItem[];
-			postsCursor = cachedList.cursor;
-			postsLoading = false;
-		} else {
-			feedItems = [];
-			postsCursor = null;
-			postsLoading = true;
-		}
-
-		// Fetch fresh profile (authenticated if logged in, for viewer state)
 		try {
 			const fresh = await getProfile({ actor });
 			if (fresh) {
 				profile = fresh;
-				cacheProfile(fresh);
 				followUri = fresh.viewer?.following ?? null;
 				followsMe = !!fresh.viewer?.followedBy;
-			} else if (!cached) {
+			} else {
 				error = 'Profile not found';
 			}
 		} catch (e) {
 			console.error('Failed to load profile:', e);
-			if (!cached) error = 'Failed to load profile';
+			error = 'Failed to load profile';
 		} finally {
 			loading = false;
 		}
 
-		// Fetch fresh posts and top posts in parallel
 		const feedPromise = (async () => {
 			try {
 				const result = await getAuthorFeed({ actor });
-				const freshItems = ingestFeedPosts(result.posts);
-				for (const item of freshItems) prefetchThread(item.uri);
-				if (!cachedList) {
-					feedItems = freshItems;
-					postsCursor = result.cursor;
-				}
-				setCachedList(key, freshItems, result.cursor);
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				feedItems = result.posts as any[];
+				postsCursor = result.cursor;
 			} catch (e) {
 				console.error('Failed to load author feed:', e);
 			} finally {
@@ -139,22 +102,21 @@
 			if (!user.did) return;
 			topPostsLoading = true;
 			try {
-				// Fetch multiple pages to find top posts by engagement
-				let allPosts: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				let allPosts: any[] = [];
 				let pageCursor: string | undefined;
 				for (let i = 0; i < 17; i++) {
 					const result = await getAuthorFeed({ actor, ...(pageCursor ? { cursor: pageCursor } : {}) });
-					const items = ingestFeedPosts(result.posts);
 					allPosts.push(...result.posts);
 					pageCursor = result.cursor ?? undefined;
 					if (!pageCursor) break;
 				}
-				// Sort by like count descending, take top 5
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const sorted = allPosts
 					.filter((p: any) => p.post?.likeCount != null) // eslint-disable-line @typescript-eslint/no-explicit-any
 					.sort((a: any, b: any) => (b.post.likeCount ?? 0) - (a.post.likeCount ?? 0)) // eslint-disable-line @typescript-eslint/no-explicit-any
 					.slice(0, 5);
-				topPostUris = sorted.map((p: any) => p.post.uri); // eslint-disable-line @typescript-eslint/no-explicit-any
+				topPosts = sorted;
 			} catch (e) {
 				console.error('Failed to load top posts:', e);
 			} finally {
@@ -178,11 +140,9 @@
 				actor: page.params.handle ?? '',
 				cursor: postsCursor
 			});
-			const newItems = ingestFeedPosts(result.posts);
-			for (const item of newItems) prefetchThread(item.uri);
-			feedItems = [...feedItems, ...newItems];
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			feedItems = [...feedItems, ...(result.posts as any[])];
 			postsCursor = result.cursor;
-			setCachedList(listKey, feedItems, postsCursor);
 		} catch (e) {
 			console.error('Failed to load more:', e);
 		} finally {
@@ -256,11 +216,11 @@
 				</div>
 			</UserProfile>
 
-			{#if user.did && topPostUris.length > 0}
+			{#if user.did && topPosts.length > 0}
 				<div class="border-base-200 dark:border-base-800 border-b px-4 py-3">
 					<h3 class="text-base-500 dark:text-base-400 text-xs font-semibold uppercase tracking-wide">Top Posts</h3>
 				</div>
-				<PostList items={topPostUris} />
+				<PostList items={topPosts} />
 				<div class="border-base-200 dark:border-base-800 border-b"></div>
 			{/if}
 
@@ -269,7 +229,6 @@
 				loading={postsLoading}
 				{loadingMore}
 				hasMore={!!postsCursor}
-				cacheKey={listKey}
 				onLoadMore={loadMore}
 				emptyText="No posts yet"
 			/>

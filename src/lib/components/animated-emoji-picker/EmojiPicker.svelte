@@ -3,12 +3,35 @@
 	import { allGroups } from './emoji';
 	import type { NativeEmoji } from 'emoji-picker-element/shared';
 	import { fade } from 'svelte/transition';
-	import { onMount } from 'svelte';
 	import icons from './icons.json';
 
-	const categories = [...new Set(icons.icons.flatMap((i) => i.categories ?? []))].sort();
+	type IconEmoji = {
+		name: string;
+		version: number;
+		popularity: number;
+		codepoint: string;
+		unsupported_families: string[];
+		categories: string[];
+		tags: string[];
+		sizes_px: number[];
+	};
 
-	console.log(categories);
+	function codepointToUnicode(codepoint: string): string {
+		return codepoint
+			.split('_')
+			.map((cp) => String.fromCodePoint(parseInt(cp, 16)))
+			.join('');
+	}
+
+	function toNativeEmoji(icon: IconEmoji): NativeEmoji {
+		return {
+			annotation: icon.name,
+			group: 0,
+			order: icon.popularity,
+			unicode: codepointToUnicode(icon.codepoint)
+		} as NativeEmoji;
+	}
+
 	let currentGroup = $state(allGroups[0]);
 
 	let {
@@ -25,19 +48,17 @@
 		class?: string;
 	} = $props();
 
-	onMount(() => {});
-
 	let currentEmojis = $derived(
-		icons.icons.filter((value) => value.categories.includes(currentGroup.name))
+		(icons.icons as IconEmoji[]).filter((value) => value.categories.includes(currentGroup.name))
 	);
 
-	function switchEmoji(event: Event, emoji, back: boolean) {
+	function switchEmoji(event: Event, emoji: IconEmoji, back: boolean) {
+		const target = event.target as HTMLImageElement | null;
+		if (!target) return;
 		if (!back)
-			event.target.src = `https://fonts.gstatic.com/s/e/notoemoji/latest/${emoji.codepoint}/512.webp`;
+			target.src = `https://fonts.gstatic.com/s/e/notoemoji/latest/${emoji.codepoint}/512.webp`;
 		else
-			event.target.src = `https://fonts.gstatic.com/s/e/notoemoji/latest/${emoji.codepoint}/emoji.svg`;
-
-		console.log('hello', back);
+			target.src = `https://fonts.gstatic.com/s/e/notoemoji/latest/${emoji.codepoint}/emoji.svg`;
 	}
 </script>
 
@@ -66,7 +87,7 @@
 			{#each currentEmojis as emoji}
 				<button
 					onclick={() => {
-						onpicked?.(emoji);
+						onpicked?.(toNativeEmoji(emoji));
 					}}
 					class="group/emoji hover:bg-accent-300/20 dark:hover:bg-accent-700/20 inline-flex size-10 cursor-pointer items-center justify-center rounded-full text-center text-xl transition-transform duration-150 hover:scale-110"
 				>

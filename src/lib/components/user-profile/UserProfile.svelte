@@ -82,7 +82,7 @@
 		{/if}
 
 		<div class="profile-description px-4 sm:px-6 lg:px-8 py-4 text-xs sm:text-sm text-base-800 dark:text-base-200">
-			{@html sanitize(linkify(profile.description ?? ''), { ADD_ATTR: ['target', 'rel'], ADD_TAGS: ['a'] })}
+			{@html sanitize(linkify(profile.description ?? ''), { ADD_ATTR: ['target', 'rel'] })}
 		</div>
 	</div>
 {/if}

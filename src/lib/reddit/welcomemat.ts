@@ -125,6 +125,29 @@ function normalizeHtu(url: string): string {
 	return u.origin + u.pathname;
 }
 
+/**
+ * Fetch a record directly from the PDS via the public
+ * `com.atproto.repo.getRecord` endpoint. Does not require auth.
+ */
+export async function getRecord(
+	pds: string,
+	repo: string,
+	collection: string,
+	rkey: string
+): Promise<{ uri: string; cid: string; value: Record<string, unknown> } | null> {
+	const url = new URL(`${pds}/xrpc/com.atproto.repo.getRecord`);
+	url.searchParams.set('repo', repo);
+	url.searchParams.set('collection', collection);
+	url.searchParams.set('rkey', rkey);
+	const res = await fetch(url);
+	if (!res.ok) return null;
+	return (await res.json()) as {
+		uri: string;
+		cid: string;
+		value: Record<string, unknown>;
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Signup
 // ---------------------------------------------------------------------------
@@ -347,6 +370,29 @@ export class WelcomeMatClient {
 		});
 		if (!res.ok) {
 			throw new Error(`createRecord failed (${res.status}): ${await res.text()}`);
+		}
+		return (await res.json()) as { uri: string; cid: string };
+	}
+
+	/**
+	 * putRecord via rookery's DPoP-auth'd endpoint. Replaces the record at
+	 * (repo, collection, rkey) with `record`. Upsert semantics: creates the
+	 * record if it doesn't exist.
+	 */
+	async putRecord(
+		collection: string,
+		rkey: string,
+		record: Record<string, unknown>
+	): Promise<{ uri: string; cid: string }> {
+		const url = `${this.account.pds}/xrpc/com.atproto.repo.putRecord`;
+		const res = await this.dpopRequest('POST', url, {
+			repo: this.account.did,
+			collection,
+			rkey,
+			record
+		});
+		if (!res.ok) {
+			throw new Error(`putRecord failed (${res.status}): ${await res.text()}`);
 		}
 		return (await res.json()) as { uri: string; cid: string };
 	}

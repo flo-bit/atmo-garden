@@ -30,7 +30,8 @@
 			"binding": "DB",
 			"database_name": "atmo-garden-db",
 			"database_id": "bd23d3c4-8845-4b45-881f-72665088104e",
-			"migrations_dir": "migrations"
+			"migrations_dir": "migrations",
+			"remote": true
 		}
 	],
 	"triggers": {

@@ -45,15 +45,27 @@ export const register = command(
 			v.regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, 'Must be [a-z0-9-], single label'),
 			v.minLength(3),
 			v.maxLength(32)
-		)
+		),
+		// Grapheme-accurate length check happens in registerCommunity; this
+		// is just a sanity cap to reject absurdly large payloads before we
+		// touch the PDS. 256 graphemes can be up to ~1024 UTF-16 code units
+		// in pathological emoji-heavy strings.
+		description: v.optional(v.pipe(v.string(), v.maxLength(2048)))
 	}),
 	async (input) => {
-		const { platform } = getRequestEvent();
+		const { platform, locals } = getRequestEvent();
 		const env = platform?.env;
 		if (!env || !env.DB) error(500, 'DB binding unavailable');
+		if (!locals.did) error(401, 'You must be signed in to create a community');
 
 		try {
-			const result = await registerCommunity(env, env.DB, input.shortHandle);
+			const result = await registerCommunity(
+				env,
+				env.DB,
+				input.shortHandle,
+				locals.did,
+				input.description
+			);
 			return { ok: true, did: result.did, handle: result.handle };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);

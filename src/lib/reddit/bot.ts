@@ -25,11 +25,32 @@ import { getPostCid, parseSubmission } from './submission';
 import {
 	WelcomeMatClient,
 	createRookeryAccount,
+	getRecord,
 	type EcPublicJwk,
 	type RookeryAccount
 } from './welcomemat';
+import {
+	countGraphemes,
+	PROFILE_DESCRIPTION_MAX_GRAPHEMES
+} from '$lib/utils/graphemes';
 
 const PUBLIC_APPVIEW = 'https://public.api.bsky.app';
+
+/**
+ * Remove the `https://<handle>.atmo.garden` line from a profile description
+ * before caching it for UI display. We keep that link in the on-network
+ * Bluesky profile so bsky users can click through to our site, but don't want
+ * to show it inside the atmo.garden UI (it's redundant there).
+ */
+function stripCommunityLink(desc: string | null | undefined): string | null {
+	if (!desc) return null;
+	const cleaned = desc
+		.split('\n')
+		.filter((line) => !/^\s*https?:\/\/\S*atmo\.garden\S*\s*$/i.test(line))
+		.join('\n')
+		.trim();
+	return cleaned || null;
+}
 const CHAT_SERVICE_DID = 'did:web:api.bsky.chat';
 const CHAT_SERVICE_BASE = 'https://api.bsky.chat/xrpc';
 const PROCESSED_REACTION = '✅';
@@ -75,12 +96,15 @@ export type RegisterResult = {
  *   1. Generate a secp256k1 keypair
  *   2. Sign up on rookery (which auto-seeds chat.bsky.actor.declaration
  *      and a bot-labeled app.bsky.actor.profile)
- *   3. Encrypt the secret key and store everything in D1
+ *   3. Write garden.atmo.community/self pinning the creator's DID
+ *   4. Encrypt the secret key and store everything in D1
  */
 export async function registerCommunity(
 	env: App.Platform['env'],
 	db: D1Database,
-	shortHandle: string
+	shortHandle: string,
+	creatorDid: Did,
+	userDescription?: string
 ): Promise<RegisterResult> {
 	if (!env.ROOKERY_HOSTNAME) throw new Error('ROOKERY_HOSTNAME not configured');
 	if (!env.ROOKERY_SIGNUP_SECRET)
@@ -92,6 +116,55 @@ export async function registerCommunity(
 		signupSecret: env.ROOKERY_SIGNUP_SECRET
 	});
 
+	const client = WelcomeMatClient.forAccount(account);
+
+	// Write garden.atmo.community/self on the community account itself,
+	// recording who created it. Non-fatal on failure — the community still
+	// exists in D1 and the bot can operate.
+	try {
+		await client.createRecord(
+			'garden.atmo.community',
+			{
+				$type: 'garden.atmo.community',
+				creator: creatorDid,
+				createdAt: new Date().toISOString()
+			},
+			'self'
+		);
+	} catch (e) {
+		console.error('[registerCommunity] failed to write garden.atmo.community/self', e);
+	}
+
+	// Build the on-network profile description: `https://<handle>` on the
+	// first line (so bsky viewers have a clickable link to our site) followed
+	// by the user's own description text, if provided. We merge into the
+	// record Rookery seeded so we don't wipe displayName / avatar.
+	const trimmedUserDesc = userDescription?.trim() ?? '';
+	const fullDescription = trimmedUserDesc
+		? `https://${account.handle}\n\n${trimmedUserDesc}`
+		: `https://${account.handle}`;
+	if (countGraphemes(fullDescription) > PROFILE_DESCRIPTION_MAX_GRAPHEMES) {
+		throw new Error(
+			`Description too long: ${PROFILE_DESCRIPTION_MAX_GRAPHEMES} graphemes max (including the https://${account.handle} link prepended for bsky)`
+		);
+	}
+	try {
+		const existing = await getRecord(
+			account.pds,
+			account.did,
+			'app.bsky.actor.profile',
+			'self'
+		);
+		const baseValue = existing?.value ?? { $type: 'app.bsky.actor.profile' };
+		await client.putRecord('app.bsky.actor.profile', 'self', {
+			...baseValue,
+			$type: 'app.bsky.actor.profile',
+			description: fullDescription
+		});
+	} catch (e) {
+		console.error('[registerCommunity] failed to update profile description', e);
+	}
+
 	// Encrypt the hex-encoded secret key.
 	const { ciphertext, iv } = await encryptPassword(
 		account.secretKeyHex,
@@ -99,14 +172,13 @@ export async function registerCommunity(
 	);
 
 	// Fetch the profile the signup seeded so we can cache display name /
-	// description for the UI. Rookery writes these immediately but the relay
-	// may not have propagated them yet — fall back to the short handle.
+	// avatar for the UI. Rookery writes these immediately but the relay may
+	// not have propagated them yet — fall back to the short handle.
 	const appview = new Client({
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
 	let displayName: string | null = shortHandle;
 	let avatar: string | null = null;
-	let description: string | null = `https://${account.handle}`;
 	try {
 		const profile = await appview.get('app.bsky.actor.getProfile', {
 			params: { actor: account.did as Did }
@@ -114,11 +186,15 @@ export async function registerCommunity(
 		if (profile.ok) {
 			displayName = profile.data.displayName ?? shortHandle;
 			avatar = profile.data.avatar ?? null;
-			description = profile.data.description ?? description;
 		}
 	} catch {
 		// non-fatal — relay hasn't indexed yet
 	}
+
+	// Cache the stripped (user-facing) description in D1. The cron refresh
+	// below also strips on every tick so edits made directly on bsky stay
+	// consistent.
+	const cachedDescription = stripCommunityLink(fullDescription);
 
 	await insertCommunity(db, {
 		did: account.did as Did,
@@ -130,7 +206,7 @@ export async function registerCommunity(
 		thumbprint: account.thumbprint,
 		display_name: displayName,
 		avatar,
-		description
+		description: cachedDescription
 	});
 
 	return { did: account.did as Did, handle: account.handle };
@@ -456,7 +532,7 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 				await updateCommunityProfile(db, row.did, {
 					display_name: profile.data.displayName ?? null,
 					avatar: profile.data.avatar ?? null,
-					description: profile.data.description ?? null
+					description: stripCommunityLink(profile.data.description)
 				});
 			}
 		} catch {

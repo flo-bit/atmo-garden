@@ -45,14 +45,21 @@ export type PostWithCommunity = PostRow & {
 	community_accent_color: string | null;
 };
 
-export async function listCommunities(db: D1Database): Promise<CommunityRow[]> {
+export type CommunityListRow = CommunityRow & { post_count: number };
+
+export async function listCommunities(db: D1Database): Promise<CommunityListRow[]> {
+	// LEFT JOIN with a grouped subquery so communities with zero posts
+	// still appear (COALESCE to 0) without needing a second roundtrip.
 	const res = await db
 		.prepare(
-			`SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, followers_count, created_at
-			 FROM communities
-			 ORDER BY followers_count DESC NULLS LAST, created_at DESC`
+			`SELECT c.did, c.handle, c.pds, c.secret_key_ciphertext, c.secret_key_iv, c.public_jwk_json, c.thumbprint, c.display_name, c.avatar, c.description, c.accent_color, c.followers_count, c.created_at,
+			        COALESCE(pc.n, 0) AS post_count
+			 FROM communities c
+			 LEFT JOIN (SELECT community_did, COUNT(*) AS n FROM posts GROUP BY community_did) pc
+			   ON pc.community_did = c.did
+			 ORDER BY c.followers_count DESC NULLS LAST, c.created_at DESC`
 		)
-		.all<CommunityRow>();
+		.all<CommunityListRow>();
 	return res.results ?? [];
 }
 

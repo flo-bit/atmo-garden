@@ -39,6 +39,9 @@ type PublicCommunity = Omit<
 > & {
 	accentColor: AccentColor;
 	followersCount: number;
+	/** Total cached submissions in this community. Populated by
+	  * listCommunities; 0 for single-row reads that don't compute it. */
+	postCount: number;
 };
 
 /** PublicCommunity + viewer-specific access state. */
@@ -46,7 +49,7 @@ type CommunityWithAccess = PublicCommunity & {
 	canSubmit: boolean;
 };
 
-function sanitize(row: CommunityRow): PublicCommunity {
+function sanitize(row: CommunityRow & { post_count?: number }): PublicCommunity {
 	/* eslint-disable @typescript-eslint/no-unused-vars */
 	const {
 		secret_key_ciphertext,
@@ -55,13 +58,15 @@ function sanitize(row: CommunityRow): PublicCommunity {
 		thumbprint,
 		accent_color,
 		followers_count,
+		post_count,
 		...rest
 	} = row;
 	/* eslint-enable @typescript-eslint/no-unused-vars */
 	return {
 		...rest,
 		accentColor: isAccentColor(accent_color) ? accent_color : DEFAULT_ACCENT_COLOR,
-		followersCount: followers_count ?? 0
+		followersCount: followers_count ?? 0,
+		postCount: post_count ?? 0
 	};
 }
 

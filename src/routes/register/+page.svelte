@@ -3,8 +3,9 @@
 	import { goto } from '$app/navigation';
 	import { Button, Input, Textarea } from '@foxui/core';
 	import { ColorSelect } from '@foxui/colors';
-	import { Loader2, CheckCircle2, ImagePlus, X } from '@lucide/svelte';
+	import { Loader2, ImagePlus, X } from '@lucide/svelte';
 	import { register } from '$lib/reddit/server/communities.remote';
+	import { followUser } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
 	import {
@@ -25,7 +26,6 @@
 	let listUrl = $state('');
 	let submitting = $state(false);
 	let errorMsg = $state<string | null>(null);
-	let success = $state<{ handle: string } | null>(null);
 
 	const accentOptions = ACCENT_COLORS.map((label) => ({
 		class: `text-${label}-500`,
@@ -109,7 +109,6 @@
 			return;
 		}
 		errorMsg = null;
-		success = null;
 		submitting = true;
 		try {
 			const trimmedDesc = description.trim();
@@ -127,10 +126,21 @@
 				whoCanSubmit,
 				...(whoCanSubmit === 'list' ? { listUrl: listUrl.trim() } : {})
 			});
-			success = { handle: result.handle };
-			shortHandle = '';
-			description = '';
-			clearAvatar();
+
+			// Auto-join: follow the freshly-created community account from
+			// the creator's repo. Non-fatal — the user can toggle the button
+			// on the community page if this fails. We don't surface the error
+			// because the overall creation succeeded.
+			try {
+				await followUser({ did: result.did });
+			} catch (err) {
+				console.error('[register] auto-follow failed', err);
+			}
+
+			// Auto-redirect to the new community page. No success card —
+			// the landing page itself is the confirmation.
+			const short = result.handle.split('.')[0];
+			await goto(`/c/${short}`);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			errorMsg = msg.replace(/^Registration failed:\s*/, '') || 'Registration failed';
@@ -279,22 +289,6 @@
 		{#if errorMsg}
 			<div class="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-300">
 				{errorMsg}
-			</div>
-		{/if}
-
-		{#if success}
-			<div class="flex items-start gap-2 rounded-lg bg-green-100 px-3 py-2 text-sm text-green-800 dark:bg-green-900/30 dark:text-green-300">
-				<CheckCircle2 size={16} class="mt-0.5 shrink-0" />
-				<div>
-					Community <span class="font-semibold">@{success.handle}</span> is ready.
-					<button
-						type="button"
-						class="ml-1 underline"
-						onclick={() => success && goto(`/c/${success.handle.split('.')[0]}`)}
-					>
-						View community →
-					</button>
-				</div>
 			</div>
 		{/if}
 

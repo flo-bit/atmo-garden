@@ -291,6 +291,40 @@ async function addCommunityToDiscoveryList(
 // Loading a client for a stored community
 // -------------------------------------------------------------------------
 
+/**
+ * Re-read the community's on-network profile (via the public appview) +
+ * `garden.atmo.community/self` record and write the fresh values into
+ * the D1 cache. Used by the cron tick AND by the editCommunity remote so
+ * an edit takes effect immediately instead of waiting up to a minute for
+ * the next cron. Fails soft — errors just leave the cache stale until
+ * the next cron tick catches up.
+ */
+export async function refreshCommunityCache(
+	env: App.Platform['env'],
+	row: CommunityRow
+): Promise<void> {
+	const appview = new Client({
+		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
+	});
+	try {
+		const [profile, config] = await Promise.all([
+			appview.get('app.bsky.actor.getProfile', { params: { actor: row.did } }),
+			fetchCommunityConfig(row.pds, row.did)
+		]);
+		if (profile.ok) {
+			await updateCommunityProfile(env.DB, row.did, {
+				display_name: profile.data.displayName ?? null,
+				avatar: profile.data.avatar ?? null,
+				description: stripCommunityLink(profile.data.description),
+				accent_color: config.accentColor,
+				followers_count: profile.data.followersCount ?? 0
+			});
+		}
+	} catch (e) {
+		console.error('[refreshCommunityCache] failed', e);
+	}
+}
+
 async function loadClient(
 	env: App.Platform['env'],
 	row: CommunityRow
@@ -1258,10 +1292,6 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	const errors: string[] = [];
 	const communities = await listCommunities(db);
 
-	const appview = new Client({
-		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
-	});
-
 	let postsCreated = 0;
 	for (const row of communities) {
 		try {
@@ -1272,28 +1302,9 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		}
 
 		// Best-effort: refresh cached profile metadata (avatar, display name,
-		// desc, follower count) from the appview, and the accent color from
-		// the community's `garden.atmo.community/self` record on the PDS.
-		// Both requests run in parallel since they hit different services.
-		// `followersCount` already comes back on every getProfile call, so
-		// caching it is free — no separate refresh schedule needed.
-		try {
-			const [profile, config] = await Promise.all([
-				appview.get('app.bsky.actor.getProfile', { params: { actor: row.did } }),
-				fetchCommunityConfig(row.pds, row.did)
-			]);
-			if (profile.ok) {
-				await updateCommunityProfile(db, row.did, {
-					display_name: profile.data.displayName ?? null,
-					avatar: profile.data.avatar ?? null,
-					description: stripCommunityLink(profile.data.description),
-					accent_color: config.accentColor,
-					followers_count: profile.data.followersCount ?? 0
-				});
-			}
-		} catch {
-			// non-fatal
-		}
+		// desc, follower count) from the appview + accent color from the
+		// community's `garden.atmo.community/self` record.
+		await refreshCommunityCache(env, row);
 	}
 
 	// Drain the jetstream for `garden.atmo.submission` records created via the

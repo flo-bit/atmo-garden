@@ -15,7 +15,8 @@ import {
 	registerCommunity,
 	updateCommunity,
 	fetchCommunityConfig,
-	checkCanSubmit
+	checkCanSubmit,
+	refreshCommunityCache
 } from '../bot';
 import { parseListUri } from '../list-uri';
 import {
@@ -325,6 +326,13 @@ export const editCommunity = command(
 			console.error('[editCommunity]', e);
 			error(400, `Update failed: ${msg}`);
 		}
+
+		// Force-refresh the D1 cache so the caller's next page load already
+		// shows the new avatar/description/accent color, instead of waiting
+		// up to a minute for the next cron tick. Soft-failure: if the
+		// appview hasn't seen the change yet (PDS → relay → appview lag),
+		// the cache stays briefly stale and the cron picks it up next tick.
+		await refreshCommunityCache(env, row);
 
 		return { ok: true, did: row.did, handle: row.handle };
 	}

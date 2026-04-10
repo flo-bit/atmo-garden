@@ -23,14 +23,14 @@
 			className
 		)}
 	>
+		{#if like}
+			<LikeButton {...like} />
+		{/if}
 		{#if reply}
 			<ReplyButton {...reply} />
 		{/if}
 		{#if repost}
 			<RepostButton {...repost} />
-		{/if}
-		{#if like}
-			<LikeButton {...like} />
 		{/if}
 		{#if bookmark}
 			<BookmarkButton {...bookmark} />

@@ -55,7 +55,7 @@
 				<li class={c.accentColor}>
 					<a
 						href={`/c/${short}`}
-						class="flex items-center gap-3 py-3 transition-colors hover:bg-base-100/50 dark:hover:bg-base-800/30"
+						class="flex items-center gap-3 py-3 transition-colors hover:bg-base-100/50 dark:hover:bg-base-800/30 px-3 rounded-2xl my-2"
 					>
 						{#if c.avatar}
 							<Avatar src={c.avatar} class="size-12 ring-2 ring-accent-500" />

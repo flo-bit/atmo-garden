@@ -107,6 +107,18 @@ export async function insertCommunity(
 		.run();
 }
 
+/**
+ * Drop a community and all of its cached submission posts. Runs in a single
+ * D1 batch so we don't leave orphaned posts behind if the community delete
+ * half-fails. Posts go first because of the foreign key on `community_did`.
+ */
+export async function deleteCommunity(db: D1Database, did: string): Promise<void> {
+	await db.batch([
+		db.prepare('DELETE FROM posts WHERE community_did = ?').bind(did),
+		db.prepare('DELETE FROM communities WHERE did = ?').bind(did)
+	]);
+}
+
 export async function updateCommunityProfile(
 	db: D1Database,
 	did: string,
@@ -191,11 +203,18 @@ export async function updatePostMetrics(
 		.run();
 }
 
-export type PostSort = 'new' | 'top-day' | 'top-week' | 'top-month';
+export type PostSort = 'hot' | 'new' | 'top-day' | 'top-week' | 'top-month';
 
 /** Map a sort key to a (where-clause, order-by-clause) pair. */
 function sortClauses(sort: PostSort): { where: string; order: string } {
 	switch (sort) {
+		case 'hot':
+			// Hacker News-style ranking: (likes + 1) / (age_hours + 2)^1.8.
+			// Scoped to the last 7 days so stale viral posts don't pin the top.
+			return {
+				where: `AND p.indexed_at > datetime('now', '-7 days')`,
+				order: `((p.like_count + 1.0) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 1.8)) DESC, p.indexed_at DESC`
+			};
 		case 'top-day':
 			return {
 				where: `AND p.indexed_at > datetime('now', '-1 day')`,
@@ -221,7 +240,8 @@ export async function getRecentPostsForCommunity(
 	db: D1Database,
 	communityDid: string,
 	limit = 50,
-	sort: PostSort = 'new'
+	sort: PostSort = 'hot',
+	offset = 0
 ): Promise<PostWithCommunity[]> {
 	const { where, order } = sortClauses(sort);
 	const res = await db
@@ -232,11 +252,33 @@ export async function getRecentPostsForCommunity(
 			 WHERE p.community_did = ?
 			 ${where}
 			 ORDER BY ${order}
-			 LIMIT ?`
+			 LIMIT ? OFFSET ?`
 		)
-		.bind(communityDid, limit)
+		.bind(communityDid, limit, offset)
 		.all<PostWithCommunity>();
 	return res.results ?? [];
+}
+
+/**
+ * Look up a single post by its AT URI, JOINed with community metadata.
+ * Used by the post detail page to show which community surfaced the post
+ * (plus its title / timestamp / accent color).
+ */
+export async function getPostByUri(
+	db: D1Database,
+	uri: string
+): Promise<PostWithCommunity | null> {
+	const res = await db
+		.prepare(
+			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
+			 FROM posts p
+			 JOIN communities c ON c.did = p.community_did
+			 WHERE p.uri = ?
+			 LIMIT 1`
+		)
+		.bind(uri)
+		.first<PostWithCommunity>();
+	return res ?? null;
 }
 
 export async function getCombinedFeed(
@@ -254,6 +296,41 @@ export async function getCombinedFeed(
 		.bind(limit)
 		.all<PostWithCommunity>();
 	return res.results ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Jetstream cursor persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the last jetstream cursor (microseconds since epoch) from the
+ * `sync_state` singleton row. Returns null when we've never drained before.
+ */
+export async function getJetstreamCursor(db: D1Database): Promise<number | null> {
+	const res = await db
+		.prepare('SELECT jetstream_cursor FROM sync_state WHERE id = 1')
+		.first<{ jetstream_cursor: number | null }>();
+	return res?.jetstream_cursor ?? null;
+}
+
+/**
+ * Upsert the jetstream cursor. `INSERT ... ON CONFLICT` keeps the row
+ * singleton and always stamps `updated_at`.
+ */
+export async function saveJetstreamCursor(
+	db: D1Database,
+	cursor: number
+): Promise<void> {
+	await db
+		.prepare(
+			`INSERT INTO sync_state (id, jetstream_cursor, updated_at)
+			 VALUES (1, ?, datetime('now'))
+			 ON CONFLICT(id) DO UPDATE SET
+			   jetstream_cursor = excluded.jetstream_cursor,
+			   updated_at = excluded.updated_at`
+		)
+		.bind(cursor)
+		.run();
 }
 
 // Posts due for metric refresh based on age-decayed cadence.

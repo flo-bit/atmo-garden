@@ -9,6 +9,7 @@
 	import { likePost, unlikePost } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
+	import { Bluesky } from '$lib/components/social-icons';
 	import { isAccentColor } from './accent-colors';
 	import type { PostRow, PostWithCommunity } from './db';
 
@@ -64,6 +65,14 @@
 		const candidate = fromRow ?? accentColorProp ?? null;
 		return isAccentColor(candidate) ? candidate : '';
 	});
+
+	// Direct link to the original post on bsky.app. Derived from the quoted
+	// PostView so it updates as soon as the appview response arrives.
+	const bskyUrl = $derived(
+		quoted
+			? `https://bsky.app/profile/${quoted.author.handle}/post/${quoted.uri.split('/').pop()}`
+			: null
+	);
 
 	const quotedEmbeds = $derived.by(() => {
 		if (!quoted) return [];
@@ -147,35 +156,40 @@
 </script>
 
 <article class="py-3 {accentClass}">
-	{#if showCommunity && communityShort}
-		<a
-			href={`/c/${communityShort}`}
-			class="flex items-center gap-2 text-xs leading-none text-base-600 dark:text-base-400 hover:underline {row.title ? '' : 'mb-2'}"
-		>
-			{#if communityAvatar}
-				<Avatar src={communityAvatar} class="size-5" />
-			{/if}
-			<span class="text-accent-600 dark:text-accent-400 font-semibold">c/{communityShort}</span>
+	<div class="flex items-center gap-2 text-xs leading-none text-base-600 dark:text-base-400 {row.title ? '' : 'mb-2'}">
+		{#if showCommunity && communityShort}
+			<a
+				href={`/c/${communityShort}`}
+				class="flex items-center gap-2 hover:underline"
+			>
+				{#if communityAvatar}
+					<Avatar src={communityAvatar} class="size-5" />
+				{/if}
+				<span class="text-accent-600 dark:text-accent-400 font-semibold">c/{communityShort}</span>
+			</a>
 			<span>·</span>
+		{/if}
+		{#if bskyUrl}
+			<a href={bskyUrl} target="_blank" rel="noopener noreferrer" class="hover:underline">
+				{fmtRelative(row.indexed_at)}
+			</a>
+		{:else}
 			<span>{fmtRelative(row.indexed_at)}</span>
-		</a>
-	{:else}
-		<div class="text-xs leading-none text-base-500 dark:text-base-400 {row.title ? '' : 'mb-2'}">
-			{fmtRelative(row.indexed_at)}
-		</div>
-	{/if}
+		{/if}
+	</div>
 
 	{#if row.title}
 		<h2 class="mb-2 mt-1 text-lg font-semibold leading-tight">{row.title}</h2>
 	{/if}
 
 	{#if quoted && quotedPostData}
+		{@const detailHref = `/profile/${quoted.author.handle}/post/${quoted.uri.split('/').pop()}${communityShort ? `?cpost=${encodeURIComponent(row.uri)}` : ''}`}
 		<div class="border-base-300 dark:border-base-600/30 bg-base-500/10 dark:bg-black/30 rounded-2xl border p-3">
 			<Post
 				data={quotedPostData}
 				embeds={quotedEmbeds}
 				compact
-				href={`/profile/${quoted.author.handle}/post/${quoted.uri.split('/').pop()}`}
+				href={detailHref}
 				handleHref={(handle) => `/profile/${handle}`}
 				onclickhandle={(handle) => goto(`/profile/${handle}`)}
 			/>
@@ -191,12 +205,33 @@
 					<Heart size={14} fill={isLiked ? 'currentColor' : 'none'} />
 					{displayLikeCount}
 				</button>
-				<span class="flex items-center gap-1">
-					<MessageCircle size={14} /> {replyCount}
-				</span>
+				{#if bskyUrl}
+					<a
+						href={bskyUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						onclick={(e) => e.stopPropagation()}
+						class="hover:text-accent-500 flex items-center gap-1 transition-colors"
+						aria-label="Reply on Bluesky"
+					>
+						<MessageCircle size={14} /> {replyCount}
+					</a>
+				{:else}
+					<span class="flex items-center gap-1">
+						<MessageCircle size={14} /> {replyCount}
+					</span>
+				{/if}
 				<span class="flex items-center gap-1">
 					<Repeat2 size={14} /> {repostCount}
 				</span>
+				{#if bskyUrl}
+					<Bluesky
+						href={bskyUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="ml-auto"
+					/>
+				{/if}
 			</div>
 		</div>
 	{:else if quoted === null}

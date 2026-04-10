@@ -1,57 +1,17 @@
-# atmo social
+# atmo garden
 
-svelte bsky client, wip
+communities on bsky
+
+## how it works
+
+- you create a community on atmo.garden 
+-> a new profile gets created for that community (e.g. for cooking it would be cooking.atmo.garden)
+- you can send a dm with a post to that profile and it gets posted to that profile 
+(if you add a text as a quote post, otherwise as a repost)
+- follow the community profile to see the posts in your timeline (or go to cooking.atmo.garden)
 
 ## todo
 
-### pages
-
-- search
-- profile (show posts, followers, following, etc)
-- feeds
-- bookmarks
-- settings
-
-## profile
-
-- make links in profile clickable
-- show website + pronouns
-- make editable
-- show germ button
-
-## general
-
-- make everything faster, faster, faster
-- add post creator
-- add keyboard bindings (e.g. j/k to navigate, enter to open post, r to reply, etc)
-
-## search
-
-- allow searching your bookmarks, likes, posts, reposts, etc
-- advanced search (e.g. filter by author, etc)
-
-## posts
-
-- show some link embeds as their own thing (e.g. youtube, tenor)
-- fix handles (space between avatar and handle sometimes)
-- make everything tighter
-- add action to reply button and repost/quote button
-
-## notifications
-
-- combine multiple notifications
-- show posts inline
-
-## settings
-
-- allow setting theme (auto/dark/light) and theme colors (base and accent color)
-- allow setting default feed
-
-## bugs
-
-- fix feed flashing sometimes
-
-## chat
-
-- send new messages
-- dont show badge for read message requests
+- pinned post explaining communities
+- submit posts on site
+- limit title length?

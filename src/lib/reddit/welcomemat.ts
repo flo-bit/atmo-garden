@@ -6,6 +6,7 @@
 // What this module provides:
 //
 //   - createRookeryAccount(): signs up a new rookery account via /api/signup
+//   - deleteRookeryAccount(): admin-gated tombstone via /api/admin/delete-account
 //   - WelcomeMatClient: holds a signing key + thumbprint for an existing
 //     account and exposes high-level operations:
 //       - signDpop(method, url, accessToken) → DPoP proof JWT
@@ -220,15 +221,22 @@ export async function createRookeryAccount(
 		})
 	});
 
-	const body = (await res.json()) as {
-		did?: string;
-		handle?: string;
-		error?: string;
-		message?: string;
-	};
+	// Read as text first so we can surface a meaningful error when rookery
+	// returns a non-JSON body (e.g. a plain "Internal Server Error" on 5xx).
+	const raw = await res.text();
+	let body: { did?: string; handle?: string; error?: string; message?: string } = {};
+	try {
+		body = raw ? JSON.parse(raw) : {};
+	} catch {
+		// Non-JSON response — fall through with an empty body and let the
+		// !res.ok branch below surface the raw text as the reason.
+	}
 	if (!res.ok || !body.did || !body.handle) {
-		const reason = body.error || body.message || `status ${res.status}`;
-		throw new Error(`rookery signup failed: ${reason}`);
+		const reason =
+			body.error ||
+			body.message ||
+			(raw && !body.did ? raw.slice(0, 200) : `status ${res.status}`);
+		throw new Error(`rookery signup failed (${res.status}): ${reason}`);
 	}
 
 	return {
@@ -241,6 +249,44 @@ export async function createRookeryAccount(
 			secretKeyHex: bytesToHex(secretKey)
 		}
 	};
+}
+
+export type DeleteAccountOptions = {
+	/** The rookery host, e.g. "pds.atmo.garden" */
+	hostname: string;
+	/** Shared admin secret gated on rookery's /api/admin/delete-account handler. */
+	signupSecret: string;
+	/** Handle or DID of the account to tombstone. */
+	handleOrDid: string;
+};
+
+/**
+ * Tombstone a rookery-hosted account via the admin delete-account endpoint.
+ * This tombstones the DID on the PLC directory, deactivates the account's DO
+ * state, and emits a firehose account event so downstream appviews stop
+ * indexing its records. Irreversible on the PLC side.
+ */
+export async function deleteRookeryAccount(opts: DeleteAccountOptions): Promise<void> {
+	const url = `https://${opts.hostname}/api/admin/delete-account`;
+	const res = await fetch(url, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'X-Rookery-Signup-Secret': opts.signupSecret
+		},
+		body: JSON.stringify({ handleOrDid: opts.handleOrDid })
+	});
+	if (res.ok) return;
+
+	// Idempotent: if the account is already deactivated we've already done
+	// the destructive work on a previous call (possibly a retry after a DO
+	// reset mid-flight) — treat that as success so the caller can proceed to
+	// clean up its own state. Rookery returns HTTP 500 for this today rather
+	// than a dedicated code, so we pattern-match the message.
+	const body = await res.text();
+	if (res.status === 500 && /already deactivated/i.test(body)) return;
+
+	throw new Error(`rookery delete-account failed (${res.status}): ${body}`);
 }
 
 // ---------------------------------------------------------------------------

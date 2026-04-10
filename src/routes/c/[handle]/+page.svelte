@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { untrack, onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { Avatar, Button } from '@foxui/core';
 	import { Loader2, Check, UserPlus } from '@lucide/svelte';
@@ -13,22 +13,29 @@
 
 	type CommunityInfo = Awaited<ReturnType<typeof getCommunity>>;
 
-	type Sort = 'new' | 'top-day' | 'top-week' | 'top-month';
-	const SORT_LABELS: Record<Sort, string> = {
-		'new': 'New',
+	type Sort = 'hot' | 'new' | 'top-day' | 'top-week' | 'top-month';
+	type TopSort = 'top-day' | 'top-week' | 'top-month';
+	type PrimaryTab = 'hot' | 'new' | 'top';
+
+	const TOP_SORT_LABELS: Record<TopSort, string> = {
 		'top-day': 'Today',
 		'top-week': 'This week',
 		'top-month': 'This month'
 	};
-	const SORT_OPTIONS: Sort[] = ['new', 'top-day', 'top-week', 'top-month'];
+	const TOP_SORT_OPTIONS: TopSort[] = ['top-day', 'top-week', 'top-month'];
 
 	let loading = $state(true);
 	let postsLoading = $state(false);
+	let loadingMore = $state(false);
+	let hasMore = $state(true);
 	let loadError = $state<string | null>(null);
 	let community = $state<CommunityInfo>(null);
 	let posts = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
-	let sort = $state<Sort>('new');
+	let sort = $state<Sort>('hot');
+	const primaryTab = $derived<PrimaryTab>(
+		sort === 'hot' ? 'hot' : sort === 'new' ? 'new' : 'top'
+	);
 
 	// Follow state — populated after the community loads, if the user is
 	// signed in. `followUri` is the AT-URI of the user's follow record
@@ -39,6 +46,7 @@
 
 	async function loadPosts(handle: string, nextSort: Sort) {
 		postsLoading = true;
+		hasMore = true;
 		try {
 			const rows = await getCommunityPosts({ handle, limit: 50, sort: nextSort });
 			posts = rows;
@@ -47,6 +55,7 @@
 				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
 				quoted = res.posts;
 			}
+			hasMore = rows.length >= 50;
 		} catch (e) {
 			console.error('[community] loadPosts failed', e);
 		} finally {
@@ -54,14 +63,59 @@
 		}
 	}
 
+	async function loadMorePosts() {
+		if (loadingMore || !hasMore || postsLoading || !community) return;
+		loadingMore = true;
+		try {
+			const rows = await getCommunityPosts({
+				handle: community.handle,
+				limit: 50,
+				sort,
+				offset: posts.length
+			});
+			posts = [...posts, ...rows];
+			if (rows.length > 0) {
+				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
+				quoted = { ...quoted, ...res.posts };
+			}
+			if (rows.length < 50) {
+				hasMore = false;
+			}
+		} catch (e) {
+			console.error('[community] loadMorePosts failed', e);
+		} finally {
+			loadingMore = false;
+		}
+	}
+
+	function handleScroll() {
+		if (!loadingMore && hasMore && !postsLoading) {
+			const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
+			if (scrollHeight - scrollTop - clientHeight < 2000) {
+				loadMorePosts();
+			}
+		}
+	}
+
+	onMount(() => {
+		window.addEventListener('scroll', handleScroll, { passive: true });
+	});
+
+	onDestroy(() => {
+		if (typeof window !== 'undefined') {
+			window.removeEventListener('scroll', handleScroll);
+		}
+	});
+
 	async function load(handle: string) {
 		loading = true;
 		loadError = null;
 		community = null;
 		posts = [];
 		quoted = {};
+		hasMore = true;
 		followUri = null;
-		sort = 'new';
+		sort = 'hot';
 		try {
 			const info = await getCommunity({ handle });
 			if (!info) {
@@ -70,7 +124,7 @@
 				return;
 			}
 			community = info;
-			await loadPosts(handle, 'new');
+			await loadPosts(handle, 'hot');
 
 			// If the viewer is signed in, fetch viewer.following from the
 			// community's profile to seed the join-button state.
@@ -94,6 +148,12 @@
 		if (next === sort || !community) return;
 		sort = next;
 		loadPosts(community.handle, next);
+	}
+
+	function onPrimaryTabClick(tab: PrimaryTab) {
+		if (tab === primaryTab) return;
+		const next: Sort = tab === 'hot' ? 'hot' : tab === 'new' ? 'new' : 'top-day';
+		onSortClick(next);
 	}
 
 	async function onJoinClick() {
@@ -179,18 +239,51 @@
 			Submit to this community by DM'ing <span class="font-mono">@{community.handle}</span> a Bluesky post link with your title.
 		</div>
 
-		<div class="mb-2 flex items-center gap-1 text-xs">
-			{#each SORT_OPTIONS as option (option)}
+		<div class="mb-3 flex flex-col gap-2">
+			<div class="flex items-center gap-1 text-sm">
 				<button
 					type="button"
-					onclick={() => onSortClick(option)}
-					class="rounded-full px-3 py-1 font-medium transition-colors {sort === option
-						? 'bg-accent-500 text-white'
-						: 'text-base-600 dark:text-base-400 hover:bg-base-200 dark:hover:bg-base-800'}"
+					onclick={() => onPrimaryTabClick('hot')}
+					class="rounded-full px-4 py-1.5 font-semibold transition-colors {primaryTab === 'hot'
+						? 'bg-accent-500 text-white shadow-sm'
+						: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
 				>
-					{SORT_LABELS[option]}
+					Hot
 				</button>
-			{/each}
+				<button
+					type="button"
+					onclick={() => onPrimaryTabClick('new')}
+					class="rounded-full px-4 py-1.5 font-semibold transition-colors {primaryTab === 'new'
+						? 'bg-accent-500 text-white shadow-sm'
+						: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
+				>
+					New
+				</button>
+				<button
+					type="button"
+					onclick={() => onPrimaryTabClick('top')}
+					class="rounded-full px-4 py-1.5 font-semibold transition-colors {primaryTab === 'top'
+						? 'bg-accent-500 text-white shadow-sm'
+						: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
+				>
+					Top
+				</button>
+			</div>
+			{#if primaryTab === 'top'}
+				<div class="flex items-center gap-1 rounded-full bg-base-100 dark:bg-base-900/60 p-1 text-xs w-fit">
+					{#each TOP_SORT_OPTIONS as option (option)}
+						<button
+							type="button"
+							onclick={() => onSortClick(option)}
+							class="rounded-full px-3 py-1 font-medium transition-colors {sort === option
+								? 'bg-accent-500 text-white shadow-sm'
+								: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
+						>
+							{TOP_SORT_LABELS[option]}
+						</button>
+					{/each}
+				</div>
+			{/if}
 		</div>
 
 		{#if postsLoading}
@@ -199,7 +292,7 @@
 			</div>
 		{:else if posts.length === 0}
 			<p class="text-base-500 dark:text-base-400 py-8 text-center text-sm">
-				{sort === 'new' ? 'No submissions yet.' : 'Nothing in this window.'}
+				{sort === 'new' || sort === 'hot' ? 'No submissions yet.' : 'Nothing in this window.'}
 			</p>
 		{:else}
 			<div class="divide-base-200 dark:divide-base-800 flex flex-col divide-y">
@@ -212,6 +305,14 @@
 					/>
 				{/each}
 			</div>
+			{#if loadingMore}
+				<div class="flex justify-center py-6">
+					<Loader2 class="text-base-400 animate-spin" size={24} />
+				</div>
+			{/if}
+			{#if !hasMore && posts.length > 0}
+				<p class="text-base-400 py-6 text-center text-sm">You've reached the end</p>
+			{/if}
 		{/if}
 	{/if}
 </div>

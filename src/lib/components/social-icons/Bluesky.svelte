@@ -27,7 +27,7 @@
 		role="img"
 		viewBox="0 0 24 24"
 		xmlns="http://www.w3.org/2000/svg"
-		class={['size-6', svgClasses]}
+		class={['size-4', svgClasses]}
 		aria-hidden="true"
 		fill="currentColor"
 		><path

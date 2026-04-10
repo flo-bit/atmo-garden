@@ -26,7 +26,7 @@
 	});
 </script>
 
-<div class="mx-auto w-full max-w-lg px-4 py-6">
+<div class="mx-auto w-full max-w-xl px-4 py-6">
 	<h1 class="mb-4 text-2xl font-bold">atmo.garden</h1>
 
 	{#if loading}

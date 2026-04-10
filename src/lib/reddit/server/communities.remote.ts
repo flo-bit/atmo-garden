@@ -4,6 +4,7 @@ import * as v from 'valibot';
 import {
 	getRecentPostsForCommunity,
 	getCombinedFeed,
+	getPostByUri,
 	listCommunities,
 	getCommunityByHandle,
 	type CommunityRow,
@@ -11,6 +12,7 @@ import {
 	type PostSort
 } from '../db';
 import { registerCommunity } from '../bot';
+import { parseListUri } from '../list-uri';
 import {
 	ACCENT_COLORS,
 	DEFAULT_ACCENT_COLOR,
@@ -85,6 +87,10 @@ export const register = command(
 		// in pathological emoji-heavy strings.
 		description: v.optional(v.pipe(v.string(), v.maxLength(2048))),
 		accentColor: v.optional(v.picklist(ACCENT_COLORS)),
+		whoCanSubmit: v.optional(v.picklist(['everyone', 'list'])),
+		// Raw user input: either an at-URI or a bsky.app list URL. Parsed
+		// and normalized server-side before being written to the record.
+		listUrl: v.optional(v.pipe(v.string(), v.maxLength(512))),
 		avatar: v.optional(
 			v.object({
 				// Base64-encoded image bytes (no data URL prefix).
@@ -108,13 +114,30 @@ export const register = command(
 			avatarPayload = { bytes, mimeType: input.avatar.mimeType };
 		}
 
+		// Parse + normalize the optional allowlist URL into a canonical
+		// at-URI. If whoCanSubmit is 'list' but no URL was given, reject.
+		const whoCanSubmit = input.whoCanSubmit ?? 'everyone';
+		let listUri: string | null = null;
+		if (whoCanSubmit === 'list') {
+			if (!input.listUrl) {
+				error(400, 'List URL is required when "members of a list" is selected');
+			}
+			try {
+				listUri = await parseListUri(input.listUrl);
+			} catch (e) {
+				error(400, e instanceof Error ? e.message : 'Invalid list URL');
+			}
+		}
+
 		try {
 			const result = await registerCommunity(env, env.DB, {
 				shortHandle: input.shortHandle,
 				creatorDid: locals.did,
 				description: input.description,
 				accentColor: input.accentColor,
-				avatar: avatarPayload
+				avatar: avatarPayload,
+				whoCanSubmit,
+				listUri
 			});
 			return { ok: true, did: result.did, handle: result.handle };
 		} catch (e) {
@@ -153,7 +176,8 @@ export const getCommunityPosts = command(
 	v.object({
 		handle: v.string(),
 		limit: v.optional(v.number()),
-		sort: v.optional(v.picklist(['new', 'top-day', 'top-week', 'top-month']))
+		offset: v.optional(v.number()),
+		sort: v.optional(v.picklist(['hot', 'new', 'top-day', 'top-week', 'top-month']))
 	}),
 	async (input): Promise<PostWithCommunity[]> => {
 		const { platform } = getRequestEvent();
@@ -167,8 +191,20 @@ export const getCommunityPosts = command(
 			env.DB,
 			row.did,
 			input.limit ?? 50,
-			(input.sort ?? 'new') as PostSort
+			(input.sort ?? 'hot') as PostSort,
+			input.offset ?? 0
 		);
+	}
+);
+
+export const getCommunityPost = command(
+	v.object({ uri: v.pipe(v.string(), v.maxLength(512)) }),
+	async (input): Promise<PostWithCommunity | null> => {
+		const { platform } = getRequestEvent();
+		const env = platform?.env;
+		if (!env || !env.DB) return null;
+
+		return getPostByUri(env.DB, input.uri);
 	}
 );
 

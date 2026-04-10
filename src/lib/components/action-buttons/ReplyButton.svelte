@@ -2,7 +2,7 @@
 	import type { ReplyButtonProps } from './types';
 	import { numberToHumanReadable } from '..';
 
-	let { count, onclick, href }: ReplyButtonProps = $props();
+	let { count, onclick, href, target }: ReplyButtonProps = $props();
 </script>
 
 {#snippet icon()}
@@ -36,6 +36,8 @@
 	<a
 		class="group/post-action inline-flex cursor-pointer items-center gap-1 text-xs"
 		{href}
+		{target}
+		rel={target === '_blank' ? 'noopener noreferrer' : undefined}
 	>
 		{@render icon()}
 	</a>

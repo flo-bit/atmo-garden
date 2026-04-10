@@ -1,7 +1,7 @@
 <script lang="ts">
 	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { goto } from '$app/navigation';
-	import { Button } from '@foxui/core';
+	import { Button, Input, Textarea } from '@foxui/core';
 	import { ColorSelect } from '@foxui/colors';
 	import { Loader2, CheckCircle2, ImagePlus, X } from '@lucide/svelte';
 	import { register } from '$lib/reddit/server/communities.remote';
@@ -21,6 +21,8 @@
 	});
 	let avatarFile = $state<File | null>(null);
 	let avatarPreview = $state<string | null>(null);
+	let whoCanSubmit = $state<'everyone' | 'list'>('everyone');
+	let listUrl = $state('');
 	let submitting = $state(false);
 	let errorMsg = $state<string | null>(null);
 	let success = $state<{ handle: string } | null>(null);
@@ -29,6 +31,17 @@
 		class: `text-${label}-500`,
 		label
 	}));
+
+	// Mirrors the server-side regex `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` by
+	// normalizing as the user types: lowercase, convert spaces/dots to
+	// dashes, drop anything else. Leading/trailing-dash enforcement is
+	// left to server validation so the user can type freely.
+	function sanitizeHandle(raw: string): string {
+		return raw
+			.toLowerCase()
+			.replace(/[\s.]/g, '-')
+			.replace(/[^a-z0-9-]/g, '');
+	}
 
 	const handlePreview = $derived(
 		shortHandle ? `${shortHandle}.atmo.garden` : 'yourname.atmo.garden'
@@ -91,6 +104,10 @@
 			errorMsg = `Description is ${descriptionGraphemes - descriptionBudget} graphemes over the limit`;
 			return;
 		}
+		if (whoCanSubmit === 'list' && !listUrl.trim()) {
+			errorMsg = 'Please enter a list URL (or switch to "everyone").';
+			return;
+		}
 		errorMsg = null;
 		success = null;
 		submitting = true;
@@ -106,7 +123,9 @@
 				shortHandle: shortHandle.trim(),
 				...(trimmedDesc ? { description: trimmedDesc } : {}),
 				accentColor: accentColor.label,
-				...(avatarPayload ? { avatar: avatarPayload } : {})
+				...(avatarPayload ? { avatar: avatarPayload } : {}),
+				whoCanSubmit,
+				...(whoCanSubmit === 'list' ? { listUrl: listUrl.trim() } : {})
 			});
 			success = { handle: result.handle };
 			shortHandle = '';
@@ -167,13 +186,15 @@
 
 			<label class="flex flex-1 flex-col gap-1">
 				<span class="text-sm font-medium">Community name</span>
-				<input
+				<Input
 					type="text"
 					bind:value={shortHandle}
+					oninput={() => (shortHandle = sanitizeHandle(shortHandle))}
 					placeholder="cooking"
 					required
+					maxlength={32}
 					disabled={submitting}
-					class="border-base-300 dark:border-base-700 bg-base-50 dark:bg-base-900 focus:border-accent-500 rounded-lg border px-3 py-2 text-sm outline-none"
+					sizeVariant="lg"
 				/>
 				<span class="text-base-500 dark:text-base-400 text-xs">
 					Your handle will be <span class="font-mono">@{handlePreview}</span>.
@@ -183,13 +204,13 @@
 
 		<label class="flex flex-col gap-1">
 			<span class="text-sm font-medium">Description <span class="text-base-500 dark:text-base-400 font-normal">(optional)</span></span>
-			<textarea
+			<Textarea
 				bind:value={description}
 				placeholder="What's this community about?"
 				disabled={submitting}
-				rows="3"
-				class="border-base-300 dark:border-base-700 bg-base-50 dark:bg-base-900 focus:border-accent-500 resize-none rounded-lg border px-3 py-2 text-sm outline-none"
-			></textarea>
+				rows={3}
+				sizeVariant="sm"
+			/>
 			<div class="flex items-start justify-between gap-2 text-xs">
 				<span class="text-base-500 dark:text-base-400">
 					Shown on the community page. A link back to atmo.garden is added automatically to the Bluesky profile.
@@ -204,6 +225,56 @@
 			<span class="text-sm font-medium">Accent color</span>
 			<ColorSelect bind:selected={accentColor} colors={accentOptions} />
 		</div>
+
+		<fieldset class="flex flex-col gap-2">
+			<legend class="mb-1 text-sm font-medium">Who can post</legend>
+			{#each [
+				{ value: 'everyone' as const, label: 'Everyone' },
+				{ value: 'list' as const, label: 'Only members of a list' }
+			] as option (option.value)}
+				<label class="group flex cursor-pointer items-center gap-3 text-sm">
+					<input
+						type="radio"
+						name="whoCanSubmit"
+						value={option.value}
+						bind:group={whoCanSubmit}
+						disabled={submitting}
+						class="peer sr-only"
+					/>
+					<span
+						aria-hidden="true"
+						class="
+							border-accent-500/40 bg-accent-100/60
+							dark:border-accent-500/20 dark:bg-accent-950/20
+							peer-checked:border-accent-500/60 peer-checked:bg-accent-200/60
+							dark:peer-checked:border-accent-500/30 dark:peer-checked:bg-accent-900/40
+							peer-focus-visible:outline-accent-500
+							peer-disabled:cursor-not-allowed peer-disabled:opacity-50
+							flex size-5 shrink-0 items-center justify-center rounded-full border backdrop-blur-lg
+							transition-colors duration-100
+							peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2
+							before:size-2 before:rounded-full before:bg-accent-600 dark:before:bg-accent-400
+							before:opacity-0 peer-checked:before:opacity-100 before:transition-opacity
+							before:content-['']
+						"
+					></span>
+					<span>{option.label}</span>
+				</label>
+			{/each}
+			{#if whoCanSubmit === 'list'}
+				<Input
+					type="url"
+					bind:value={listUrl}
+					placeholder="https://bsky.app/profile/…/lists/…"
+					disabled={submitting}
+					sizeVariant="sm"
+					class="mt-1"
+				/>
+				<span class="text-base-500 dark:text-base-400 text-xs">
+					Paste a Bluesky list URL or at-URI. Only accounts on that list will be able to submit posts by DM'ing the community.
+				</span>
+			{/if}
+		</fieldset>
 
 		{#if errorMsg}
 			<div class="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-300">

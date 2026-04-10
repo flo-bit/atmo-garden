@@ -2,12 +2,13 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { UserProfile } from '$lib/components';
+	import { Bluesky } from '$lib/components/social-icons';
 	import { Button } from '@foxui/core';
 	import { Loader2, LogOut } from '@lucide/svelte';
 	import { user, logout } from '$lib/atproto/auth.svelte';
 	import { getAuthorFeed, followUser, unfollowUser, getProfile } from '$lib/atproto/server/feed.remote';
 	import ScrollablePostList from '$lib/components/ScrollablePostList.svelte';
-	import PostList, { type FeedItem } from '$lib/components/PostList.svelte';
+	import { type FeedItem } from '$lib/components/PostList.svelte';
 
 	import { UserPlus, UserCheck } from '@lucide/svelte';
 
@@ -28,10 +29,6 @@
 	let postsCursor = $state<string | null>(null);
 	let postsLoading = $state(true);
 	let loadingMore = $state(false);
-
-	// Top posts state
-	let topPosts = $state<FeedItem[]>([]);
-	let topPostsLoading = $state(false);
 
 	async function toggleFollow() {
 		if (!profile?.did || followLoading) return;
@@ -61,8 +58,6 @@
 		error = null;
 		followUri = null;
 		followsMe = false;
-		topPosts = [];
-		topPostsLoading = false;
 		profile = null;
 		loading = true;
 		feedItems = [];
@@ -98,33 +93,7 @@
 			}
 		})();
 
-		const topPostsPromise = (async () => {
-			if (!user.did) return;
-			topPostsLoading = true;
-			try {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				let allPosts: any[] = [];
-				let pageCursor: string | undefined;
-				for (let i = 0; i < 17; i++) {
-					const result = await getAuthorFeed({ actor, ...(pageCursor ? { cursor: pageCursor } : {}) });
-					allPosts.push(...result.posts);
-					pageCursor = result.cursor ?? undefined;
-					if (!pageCursor) break;
-				}
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const sorted = allPosts
-					.filter((p: any) => p.post?.likeCount != null) // eslint-disable-line @typescript-eslint/no-explicit-any
-					.sort((a: any, b: any) => (b.post.likeCount ?? 0) - (a.post.likeCount ?? 0)) // eslint-disable-line @typescript-eslint/no-explicit-any
-					.slice(0, 5);
-				topPosts = sorted;
-			} catch (e) {
-				console.error('Failed to load top posts:', e);
-			} finally {
-				topPostsLoading = false;
-			}
-		})();
-
-		await Promise.all([feedPromise, topPostsPromise]);
+		await feedPromise;
 	}
 
 	$effect(() => {
@@ -191,38 +160,33 @@
 							{/if}
 						{/if}
 					</div>
-					{#if isOwnProfile}
-						<Button variant="ghost" onclick={logout} class="gap-2" size="sm">
-							<LogOut size={14} />
-							Log out
-						</Button>
-					{:else if user.did}
-						<Button
-							variant="primary"
-							size="sm"
-							onclick={toggleFollow}
-							disabled={followLoading}
-							class="gap-1.5"
-						>
-							{#if isFollowing}
-								<UserCheck size={14} />
-								Following
-							{:else}
-								<UserPlus size={14} />
-								Follow
-							{/if}
-						</Button>
-					{/if}
+					<div class="flex items-center gap-2">
+						<Bluesky href={`https://bsky.app/profile/${profile.handle}`} svgClasses="size-5" />
+						{#if isOwnProfile}
+							<Button variant="ghost" onclick={logout} class="gap-2" size="sm">
+								<LogOut size={14} />
+								Log out
+							</Button>
+						{:else if user.did}
+							<Button
+								variant="primary"
+								size="sm"
+								onclick={toggleFollow}
+								disabled={followLoading}
+								class="gap-1.5"
+							>
+								{#if isFollowing}
+									<UserCheck size={14} />
+									Following
+								{:else}
+									<UserPlus size={14} />
+									Follow
+								{/if}
+							</Button>
+						{/if}
+					</div>
 				</div>
 			</UserProfile>
-
-			{#if user.did && topPosts.length > 0}
-				<div class="border-base-200 dark:border-base-800 border-b px-4 py-3">
-					<h3 class="text-base-500 dark:text-base-400 text-xs font-semibold uppercase tracking-wide">Top Posts</h3>
-				</div>
-				<PostList items={topPosts} />
-				<div class="border-base-200 dark:border-base-800 border-b"></div>
-			{/if}
 
 			<ScrollablePostList
 				items={feedItems}

@@ -12,11 +12,14 @@ import type { Did, ResourceUri } from '@atcute/lexicons';
 import { decryptPassword, encryptPassword } from './crypto';
 import {
 	getCombinedFeed,
+	getCommunityByDid,
+	getJetstreamCursor,
 	getPostsDueForRefresh,
 	hasSubmission,
 	insertCommunity,
 	insertPost,
 	listCommunities,
+	saveJetstreamCursor,
 	updateCommunityProfile,
 	updatePostMetrics,
 	type CommunityRow
@@ -47,18 +50,40 @@ const PUBLIC_APPVIEW = 'https://public.api.bsky.app';
  * Bluesky profile so bsky users can click through to our site, but don't want
  * to show it inside the atmo.garden UI (it's redundant there).
  */
+export type WhoCanSubmit = 'everyone' | 'list';
+
+export type CommunityConfig = {
+	accentColor: AccentColor;
+	whoCanSubmit: WhoCanSubmit;
+	listUri: string | null;
+};
+
+const DEFAULT_COMMUNITY_CONFIG: CommunityConfig = {
+	accentColor: DEFAULT_ACCENT_COLOR,
+	whoCanSubmit: 'everyone',
+	listUri: null
+};
+
 /**
- * Fetch the community's `garden.atmo.community/self` record and return its
- * accent color, validated against the allowlist. Falls back to the default
- * if the record is missing or the field is invalid.
+ * Fetch the community's `garden.atmo.community/self` record and return the
+ * UI-relevant fields. Falls back to sensible defaults on any failure so the
+ * community still works without a record.
  */
-async function fetchRecordAccentColor(pds: string, did: string): Promise<AccentColor> {
+async function fetchCommunityConfig(pds: string, did: string): Promise<CommunityConfig> {
 	try {
 		const rec = await getRecord(pds, did, 'garden.atmo.community', 'self');
-		const value = (rec?.value ?? {}) as { accentColor?: unknown };
-		return isAccentColor(value.accentColor) ? value.accentColor : DEFAULT_ACCENT_COLOR;
+		const value = (rec?.value ?? {}) as {
+			accentColor?: unknown;
+			whoCanSubmit?: unknown;
+			listUri?: unknown;
+		};
+		return {
+			accentColor: isAccentColor(value.accentColor) ? value.accentColor : DEFAULT_ACCENT_COLOR,
+			whoCanSubmit: value.whoCanSubmit === 'list' ? 'list' : 'everyone',
+			listUri: typeof value.listUri === 'string' ? value.listUri : null
+		};
 	} catch {
-		return DEFAULT_ACCENT_COLOR;
+		return { ...DEFAULT_COMMUNITY_CONFIG };
 	}
 }
 
@@ -74,6 +99,101 @@ function stripCommunityLink(desc: string | null | undefined): string | null {
 const CHAT_SERVICE_DID = 'did:web:api.bsky.chat';
 const CHAT_SERVICE_BASE = 'https://api.bsky.chat/xrpc';
 const PROCESSED_REACTION = '✅';
+const REJECTED_REACTION = '🔒';
+
+// -------------------------------------------------------------------------
+// Welcome post helpers
+// -------------------------------------------------------------------------
+
+const textEncoder = new TextEncoder();
+
+/** Find the UTF-8 byte range of `substring` inside `text`, or null. */
+function byteRange(
+	text: string,
+	substring: string
+): { byteStart: number; byteEnd: number } | null {
+	const charIdx = text.indexOf(substring);
+	if (charIdx === -1) return null;
+	const byteStart = textEncoder.encode(text.slice(0, charIdx)).byteLength;
+	const byteEnd = byteStart + textEncoder.encode(substring).byteLength;
+	return { byteStart, byteEnd };
+}
+
+type RichtextFacet = {
+	index: { byteStart: number; byteEnd: number };
+	features: { $type: 'app.bsky.richtext.facet#link'; uri: string }[];
+};
+
+/**
+ * Compose + publish the "this is a community account" welcome post on a
+ * freshly-registered community account. Explains how submissions work and
+ * links back to the community on atmo.garden (plus the allowlist if gated).
+ *
+ * Returns the new post's `{uri, cid}` so the caller can pin it on the
+ * community's profile, or `null` if the post failed to create.
+ */
+async function createWelcomePost(
+	client: WelcomeMatClient,
+	shortHandle: string,
+	access: { whoCanSubmit: WhoCanSubmit; listUri: string | null }
+): Promise<{ uri: string; cid: string } | null> {
+	const communityUrl = `https://${shortHandle}.atmo.garden`;
+	const gatedToList = access.whoCanSubmit === 'list' && !!access.listUri;
+	const domainText = `${shortHandle}.atmo.garden`;
+
+	const submitterLine = gatedToList
+		? 'People from this list can submit posts'
+		: 'Everyone can submit posts';
+
+	const text = `This is a community account, people can submit bsky posts by DM'ing them to this account
+- DMs with text get quoted
+- DMs without text get reposted
+
+${submitterLine}
+
+see posts of this community sorted by Hot/New/Top on ${domainText}`;
+
+	const facets: RichtextFacet[] = [];
+
+	if (gatedToList && access.listUri) {
+		// at://did:plc:xxx/app.bsky.graph.list/rkey → https://bsky.app/profile/did/lists/rkey
+		const match = access.listUri.match(
+			/^at:\/\/([^/]+)\/app\.bsky\.graph\.list\/([^/]+)$/
+		);
+		if (match) {
+			const [, did, rkey] = match;
+			const listUrl = `https://bsky.app/profile/${did}/lists/${rkey}`;
+			const range = byteRange(text, 'this list');
+			if (range) {
+				facets.push({
+					index: range,
+					features: [{ $type: 'app.bsky.richtext.facet#link', uri: listUrl }]
+				});
+			}
+		}
+	}
+
+	const domainRange = byteRange(text, domainText);
+	if (domainRange) {
+		facets.push({
+			index: domainRange,
+			features: [{ $type: 'app.bsky.richtext.facet#link', uri: communityUrl }]
+		});
+	}
+
+	try {
+		const result = await client.createRecord('app.bsky.feed.post', {
+			$type: 'app.bsky.feed.post',
+			text,
+			facets,
+			createdAt: new Date().toISOString()
+		});
+		return { uri: result.uri, cid: result.cid };
+	} catch (e) {
+		console.error('[createWelcomePost] failed', e);
+		return null;
+	}
+}
 
 // -------------------------------------------------------------------------
 // Loading a client for a stored community
@@ -127,6 +247,14 @@ export type RegisterCommunityOptions = {
 	avatar?: { bytes: Uint8Array; mimeType: string };
 	/** Tailwind color label, e.g. "pink", "blue", "lime". */
 	accentColor?: string;
+	/** Who is allowed to submit posts. Defaults to 'everyone'. */
+	whoCanSubmit?: WhoCanSubmit;
+	/**
+	 * When `whoCanSubmit === 'list'`, the canonical at-URI of the allowlist
+	 * `app.bsky.graph.list` record. Caller is responsible for parsing and
+	 * normalizing (handle → DID) before passing.
+	 */
+	listUri?: string | null;
 };
 
 export async function registerCommunity(
@@ -138,7 +266,15 @@ export async function registerCommunity(
 	if (!env.ROOKERY_SIGNUP_SECRET)
 		throw new Error('ROOKERY_SIGNUP_SECRET not configured');
 
-	const { shortHandle, creatorDid, description: userDescription, avatar, accentColor } = opts;
+	const {
+		shortHandle,
+		creatorDid,
+		description: userDescription,
+		avatar,
+		accentColor,
+		whoCanSubmit = 'everyone',
+		listUri
+	} = opts;
 
 	const { account } = await createRookeryAccount({
 		hostname: env.ROOKERY_HOSTNAME,
@@ -150,8 +286,8 @@ export async function registerCommunity(
 
 	// Write garden.atmo.community/self. This record is the canonical
 	// location for per-community metadata we own (creator, accent color,
-	// future app-specific fields). Non-fatal on failure — the community
-	// still exists and the bot can operate.
+	// access control, future app-specific fields). Non-fatal on failure —
+	// the community still exists and the bot can operate.
 	try {
 		await client.createRecord(
 			'garden.atmo.community',
@@ -159,6 +295,8 @@ export async function registerCommunity(
 				$type: 'garden.atmo.community',
 				creator: creatorDid,
 				accentColor: accentColor ?? 'pink',
+				whoCanSubmit,
+				...(whoCanSubmit === 'list' && listUri ? { listUri } : {}),
 				createdAt: new Date().toISOString()
 			},
 			'self'
@@ -193,6 +331,14 @@ export async function registerCommunity(
 			`Description too long: ${PROFILE_DESCRIPTION_MAX_GRAPHEMES} graphemes max (including the https://${account.handle} link prepended for bsky)`
 		);
 	}
+	// Publish the "this is a community account" welcome post first, so we
+	// have its `{uri, cid}` to pin on the profile below. Non-fatal — if
+	// this fails the profile just won't have a pinned post.
+	const welcomePost = await createWelcomePost(client, shortHandle, {
+		whoCanSubmit,
+		listUri: listUri ?? null
+	});
+
 	try {
 		const existing = await getRecord(
 			account.pds,
@@ -205,7 +351,8 @@ export async function registerCommunity(
 			...baseValue,
 			$type: 'app.bsky.actor.profile',
 			description: fullDescription,
-			...(avatarBlob ? { avatar: avatarBlob } : {})
+			...(avatarBlob ? { avatar: avatarBlob } : {}),
+			...(welcomePost ? { pinnedPost: welcomePost } : {})
 		});
 	} catch (e) {
 		console.error('[registerCommunity] failed to update profile', e);
@@ -381,9 +528,60 @@ async function addReaction(
 	}).catch(() => {});
 }
 
+async function sendMessage(
+	client: WelcomeMatClient,
+	convoId: string,
+	text: string
+): Promise<void> {
+	await chatCall(client, 'chat.bsky.convo.sendMessage', {
+		method: 'POST',
+		body: { convoId, message: { text } }
+	}).catch((e) => {
+		console.error('[sendMessage] failed', e);
+	});
+}
+
 // -------------------------------------------------------------------------
 // DM processing
 // -------------------------------------------------------------------------
+
+/**
+ * Fetch all member DIDs of an `app.bsky.graph.list` via the public appview.
+ * `app.bsky.graph.getList` is an unauthenticated endpoint that returns up
+ * to 100 items per page, so we loop through cursors until exhausted.
+ *
+ * For the atmo use case, community allowlists are typically small, so one
+ * call usually suffices. Returns an empty Set on failure (which means the
+ * gated community will reject every submission — fail-closed).
+ */
+async function fetchListMembers(listUri: string): Promise<Set<string>> {
+	const members = new Set<string>();
+	let cursor: string | undefined;
+	try {
+		do {
+			const url = new URL(`${PUBLIC_APPVIEW}/xrpc/app.bsky.graph.getList`);
+			url.searchParams.set('list', listUri);
+			url.searchParams.set('limit', '100');
+			if (cursor) url.searchParams.set('cursor', cursor);
+			const res = await fetch(url);
+			if (!res.ok) {
+				console.error('[fetchListMembers] non-ok response', res.status);
+				return members;
+			}
+			const body = (await res.json()) as {
+				cursor?: string;
+				items?: { subject?: { did?: string } }[];
+			};
+			for (const item of body.items ?? []) {
+				if (item.subject?.did) members.add(item.subject.did);
+			}
+			cursor = body.cursor;
+		} while (cursor);
+	} catch (e) {
+		console.error('[fetchListMembers] failed', e);
+	}
+	return members;
+}
 
 /**
  * Poll both accepted + request convos for a community and turn fresh
@@ -398,11 +596,30 @@ export async function processCommunityDms(
 	const client = await loadClient(env, row);
 	let created = 0;
 
+	// Fetch the community's access-control config once per tick so we
+	// don't hammer the PDS getRecord endpoint per DM. If the community is
+	// gated, also pre-fetch the full set of allowed DIDs from the list so
+	// per-sender checks below are O(1).
+	const config = await fetchCommunityConfig(row.pds, row.did);
+	const gated = config.whoCanSubmit === 'list' && !!config.listUri;
+	const allowedMembers = gated ? await fetchListMembers(config.listUri!) : null;
+
 	const [accepted, requested] = await Promise.all([
 		listConvos(client, 'accepted'),
 		listConvos(client, 'request')
 	]);
 	const convos = [...accepted, ...requested];
+
+	function isAllowed(senderDid: string): boolean {
+		if (!gated) return true;
+		return allowedMembers?.has(senderDid) ?? false;
+	}
+
+	// Track convos where we've already sent a rejection message this tick
+	// so a user with multiple queued messages only gets one reply.
+	const notifiedRejections = new Set<string>();
+	const REJECTION_MESSAGE =
+		"Sorry, only members of this community's allowlist can submit posts. If you think this is a mistake, reach out to the community owner.";
 
 	for (const convo of convos) {
 		const otherMembers = convo.members.filter((m) => m.did !== row.did);
@@ -419,11 +636,14 @@ export async function processCommunityDms(
 			if (!msg.sender) continue;
 			if (msg.sender.did === row.did) continue;
 
-			// Already processed? Look for our own ✅ reaction on this message.
-			const alreadyProcessed = msg.reactions?.some(
-				(r) => r.value === PROCESSED_REACTION && r.sender?.did === row.did
+			// Already handled? Look for our own ✅ (processed) or 🔒 (rejected)
+			// reaction on this message — either one means "don't reconsider".
+			const alreadyHandled = msg.reactions?.some(
+				(r) =>
+					(r.value === PROCESSED_REACTION || r.value === REJECTED_REACTION) &&
+					r.sender?.did === row.did
 			);
-			if (alreadyProcessed) continue;
+			if (alreadyHandled) continue;
 
 			const submission = await parseSubmission({
 				text: msg.text,
@@ -432,6 +652,18 @@ export async function processCommunityDms(
 			if (!submission) {
 				// Mark as handled so we don't re-parse on every cron run.
 				await addReaction(client, convo.id, msg.id, PROCESSED_REACTION);
+				continue;
+			}
+
+			// Access control gate. Reply with a rejection message the first
+			// time we see a rejected DM in a given convo this tick, then
+			// mark it with 🔒 so we don't reconsider on the next run.
+			if (!isAllowed(msg.sender.did)) {
+				if (!notifiedRejections.has(convo.id)) {
+					await sendMessage(client, convo.id, REJECTION_MESSAGE);
+					notifiedRejections.add(convo.id);
+				}
+				await addReaction(client, convo.id, msg.id, REJECTED_REACTION);
 				continue;
 			}
 
@@ -483,7 +715,8 @@ async function createSubmissionPost(
 			result = await client.createRecord('app.bsky.feed.repost', {
 				$type: 'app.bsky.feed.repost',
 				subject: { uri: submission.postUri, cid: quotedCid },
-				createdAt
+				createdAt,
+				submittedBy: senderDid
 			});
 		} else {
 			result = await client.createRecord('app.bsky.feed.post', {
@@ -493,8 +726,31 @@ async function createSubmissionPost(
 				embed: {
 					$type: 'app.bsky.embed.record',
 					record: { uri: submission.postUri, cid: quotedCid }
-				}
+				},
+				submittedBy: senderDid
 			});
+
+			// Lock replies on the quote post so randos can't pile on under the
+			// community's submission. Threadgate records must share the rkey
+			// of the post they gate; an empty `allow` array means "nobody can
+			// reply". Non-fatal — the submission still counts if this fails.
+			const postRkey = result.uri.split('/').pop();
+			if (postRkey) {
+				try {
+					await client.createRecord(
+						'app.bsky.feed.threadgate',
+						{
+							$type: 'app.bsky.feed.threadgate',
+							post: result.uri,
+							allow: [],
+							createdAt
+						},
+						postRkey
+					);
+				} catch (e) {
+					console.error('[createSubmissionPost] threadgate createRecord failed', e);
+				}
+			}
 		}
 	} catch (e) {
 		console.error('[createSubmissionPost] rookery createRecord failed', e);
@@ -515,6 +771,172 @@ async function createSubmissionPost(
 		indexed_at: createdAt
 	});
 	return inserted;
+}
+
+// -------------------------------------------------------------------------
+// Web submissions via garden.atmo.submission records (jetstream-driven)
+// -------------------------------------------------------------------------
+
+/**
+ * Reason a web submission was dropped. Surfaced for logging; callers don't
+ * branch on these today.
+ */
+export type WebSubmissionResult =
+	| { ok: true }
+	| { ok: false; reason: 'unknown-community' | 'not-allowed' | 'duplicate' | 'failed' };
+
+/**
+ * Handle a single `garden.atmo.submission` record: look up the target
+ * community, check allowlist, dedup, and create the quote/repost on the
+ * community account. Mirrors the DM path in `processCommunityDms` but driven
+ * by records seen on the jetstream instead of DMs.
+ */
+export async function processWebSubmission(
+	env: App.Platform['env'],
+	db: D1Database,
+	input: {
+		communityDid: string;
+		postUri: ResourceUri;
+		title: string;
+		submitterDid: Did;
+	}
+): Promise<WebSubmissionResult> {
+	const row = await getCommunityByDid(db, input.communityDid);
+	if (!row) return { ok: false, reason: 'unknown-community' };
+
+	// Access control: re-read the community config on every submission so
+	// allowlist flips take effect immediately. Cheap compared to the DM path
+	// because we don't have a convo loop to amortize over.
+	const config = await fetchCommunityConfig(row.pds, row.did);
+	if (config.whoCanSubmit === 'list' && config.listUri) {
+		const members = await fetchListMembers(config.listUri);
+		if (!members.has(input.submitterDid)) {
+			return { ok: false, reason: 'not-allowed' };
+		}
+	}
+
+	// Dedup against both the existing DM path and any prior jetstream run
+	// that already processed this record.
+	if (await hasSubmission(db, row.did, input.postUri)) {
+		return { ok: false, reason: 'duplicate' };
+	}
+
+	const client = await loadClient(env, row);
+	const ok = await createSubmissionPost(
+		db,
+		client,
+		row,
+		{ title: input.title, postUri: input.postUri },
+		input.submitterDid
+	);
+	return ok ? { ok: true } : { ok: false, reason: 'failed' };
+}
+
+/**
+ * Drain `garden.atmo.submission` commit events from the jetstream, process
+ * each one, and persist the new cursor on exit. Safe to call from the cron —
+ * self-bounded by `timeoutMs` and by the "caught up to present" check.
+ */
+export async function drainSubmissionJetstream(
+	env: App.Platform['env'],
+	db: D1Database,
+	timeoutMs = 20_000
+): Promise<{ events: number; created: number; cursor: number | null }> {
+	// Dynamic import so we only pay the WebSocket startup cost when the cron
+	// actually drains (and so unit tests that don't touch the jetstream can
+	// still import bot.ts cleanly).
+	const { JetstreamSubscription } = await import('@atcute/jetstream');
+
+	const cursor = await getJetstreamCursor(db);
+	const startTimeUs = Date.now() * 1000;
+	const deadline = Date.now() + timeoutMs;
+
+	type PendingSubmission = {
+		communityDid: string;
+		postUri: ResourceUri;
+		title: string;
+		submitterDid: Did;
+	};
+	const pending: PendingSubmission[] = [];
+
+	const subscription = new JetstreamSubscription({
+		url: [
+			'wss://jetstream1.us-east.bsky.network/subscribe',
+			'wss://jetstream2.us-east.bsky.network/subscribe',
+			'wss://jetstream1.us-west.bsky.network/subscribe',
+			'wss://jetstream2.us-west.bsky.network/subscribe'
+		],
+		wantedCollections: ['garden.atmo.submission'],
+		...(cursor !== null ? { cursor } : {})
+	});
+
+	try {
+		for await (const event of subscription) {
+			if (event.kind === 'commit') {
+				const { commit } = event;
+				if (
+					commit.operation === 'create' &&
+					commit.collection === 'garden.atmo.submission' &&
+					commit.record
+				) {
+					const record = commit.record as {
+						post?: unknown;
+						community?: unknown;
+						title?: unknown;
+					};
+					const postUri = typeof record.post === 'string' ? record.post : null;
+					const communityDid =
+						typeof record.community === 'string' ? record.community : null;
+					const title = typeof record.title === 'string' ? record.title : '';
+
+					// Only accept well-formed `app.bsky.feed.post` quotes — mirror
+					// the DM parser's shape so downstream code can assume a valid
+					// quoted post.
+					if (
+						postUri &&
+						communityDid &&
+						/^at:\/\/did:[^/]+\/app\.bsky\.feed\.post\/[A-Za-z0-9]+$/.test(postUri)
+					) {
+						pending.push({
+							communityDid,
+							postUri: postUri as ResourceUri,
+							title,
+							submitterDid: event.did as Did
+						});
+					}
+				}
+			}
+
+			if (event.time_us >= startTimeUs) break;
+			if (Date.now() >= deadline) break;
+		}
+	} catch (e) {
+		console.error('[drainSubmissionJetstream] subscription failed', e);
+	}
+
+	// Process after the stream closes so we don't hold the WebSocket open
+	// while hitting rookery per submission. Failures are logged but don't
+	// block cursor advancement — the dedup in `processWebSubmission` makes
+	// re-processing safe in future runs anyway.
+	let created = 0;
+	for (const p of pending) {
+		try {
+			const res = await processWebSubmission(env, db, p);
+			if (res.ok) created++;
+			else if (res.reason === 'failed') {
+				console.error('[drainSubmissionJetstream] failed submission', p);
+			}
+		} catch (e) {
+			console.error('[drainSubmissionJetstream] processing error', e, p);
+		}
+	}
+
+	const lastCursor = subscription.cursor ?? null;
+	if (lastCursor !== null) {
+		await saveJetstreamCursor(db, lastCursor);
+	}
+
+	return { events: pending.length, created, cursor: lastCursor };
 }
 
 // -------------------------------------------------------------------------
@@ -582,6 +1004,8 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 export async function runCronTick(env: App.Platform['env']): Promise<{
 	communitiesChecked: number;
 	postsCreated: number;
+	webSubmissionsCreated: number;
+	jetstreamEvents: number;
 	postsRefreshed: number;
 	errors: string[];
 }> {
@@ -611,16 +1035,16 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		// `followersCount` already comes back on every getProfile call, so
 		// caching it is free — no separate refresh schedule needed.
 		try {
-			const [profile, recordAccent] = await Promise.all([
+			const [profile, config] = await Promise.all([
 				appview.get('app.bsky.actor.getProfile', { params: { actor: row.did } }),
-				fetchRecordAccentColor(row.pds, row.did)
+				fetchCommunityConfig(row.pds, row.did)
 			]);
 			if (profile.ok) {
 				await updateCommunityProfile(db, row.did, {
 					display_name: profile.data.displayName ?? null,
 					avatar: profile.data.avatar ?? null,
 					description: stripCommunityLink(profile.data.description),
-					accent_color: recordAccent,
+					accent_color: config.accentColor,
 					followers_count: profile.data.followersCount ?? 0
 				});
 			}
@@ -628,6 +1052,15 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 			// non-fatal
 		}
 	}
+
+	// Drain the jetstream for `garden.atmo.submission` records created via the
+	// website. Bounded by its own timeout so a slow stream can't starve metric
+	// refresh below. Advances the persisted cursor on exit regardless of
+	// processing success — dedup in `processWebSubmission` keeps replay safe.
+	const jetstreamResult = await drainSubmissionJetstream(env, db).catch((e) => {
+		errors.push(`jetstream: ${String(e)}`);
+		return { events: 0, created: 0, cursor: null };
+	});
 
 	const postsRefreshed = await refreshPostMetrics(db).catch((e) => {
 		errors.push(`refresh: ${String(e)}`);
@@ -637,6 +1070,8 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	return {
 		communitiesChecked: communities.length,
 		postsCreated,
+		webSubmissionsCreated: jetstreamResult.created,
+		jetstreamEvents: jetstreamResult.events,
 		postsRefreshed,
 		errors
 	};

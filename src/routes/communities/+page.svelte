@@ -118,7 +118,7 @@
 			No communities yet. <a href="/register" class="underline">Create the first one.</a>
 		</p>
 	{:else}
-		<ul class="divide-base-200 dark:divide-base-800 flex flex-col divide-y">
+		<ul class="flex flex-col">
 			{#each communities as c (c.did)}
 				{@const short = c.handle.split('.')[0]}
 				{@const state = followStates[c.did] ?? { followUri: null, loading: false }}

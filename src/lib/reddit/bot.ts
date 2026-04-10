@@ -72,7 +72,7 @@ const DEFAULT_COMMUNITY_CONFIG: CommunityConfig = {
  * UI-relevant fields. Falls back to sensible defaults on any failure so the
  * community still works without a record.
  */
-async function fetchCommunityConfig(pds: string, did: string): Promise<CommunityConfig> {
+export async function fetchCommunityConfig(pds: string, did: string): Promise<CommunityConfig> {
 	try {
 		const rec = await getRecord(pds, did, 'garden.atmo.community', 'self');
 		const value = (rec?.value ?? {}) as {
@@ -310,6 +310,96 @@ async function loadClient(
 		secretKeyHex
 	};
 	return WelcomeMatClient.forAccount(account);
+}
+
+/**
+ * Partial update of a community's on-network presence. Fields that are
+ * omitted are left untouched (both on the profile record and on
+ * garden.atmo.community/self). The D1 cache picks up display-name /
+ * avatar / description / accent from the next cron tick; accent_color
+ * can be updated inline since we know the new value.
+ */
+export type UpdateCommunityOptions = {
+	avatar?: { bytes: Uint8Array; mimeType: string };
+	/** User-facing description (we prepend the `https://<handle>` link). */
+	description?: string;
+	accentColor?: string;
+};
+
+export async function updateCommunity(
+	env: App.Platform['env'],
+	row: CommunityRow,
+	opts: UpdateCommunityOptions
+): Promise<void> {
+	const client = await loadClient(env, row);
+
+	// Upload new avatar blob if provided.
+	let avatarBlob:
+		| { $type: 'blob'; ref: { $link: string }; mimeType: string; size: number }
+		| null = null;
+	if (opts.avatar) {
+		avatarBlob = await client.uploadBlob(opts.avatar.bytes, opts.avatar.mimeType);
+	}
+
+	// Merge into the existing profile record. We read it first so we
+	// don't clobber fields we don't touch (displayName etc.).
+	if (avatarBlob || opts.description !== undefined) {
+		try {
+			const existing = await getRecord(
+				row.pds,
+				row.did,
+				'app.bsky.actor.profile',
+				'self'
+			);
+			const baseValue =
+				existing?.value ?? ({ $type: 'app.bsky.actor.profile' } as Record<string, unknown>);
+
+			const next: Record<string, unknown> = { ...baseValue, $type: 'app.bsky.actor.profile' };
+
+			if (avatarBlob) {
+				next.avatar = avatarBlob;
+			}
+			if (opts.description !== undefined) {
+				const trimmed = opts.description.trim();
+				const full = trimmed
+					? `https://${row.handle}\n\n${trimmed}`
+					: `https://${row.handle}`;
+				if (countGraphemes(full) > PROFILE_DESCRIPTION_MAX_GRAPHEMES) {
+					throw new Error(
+						`Description too long: ${PROFILE_DESCRIPTION_MAX_GRAPHEMES} graphemes max (including the https://${row.handle} prefix)`
+					);
+				}
+				next.description = full;
+			}
+
+			await client.putRecord('app.bsky.actor.profile', 'self', next);
+		} catch (e) {
+			console.error('[updateCommunity] failed to update profile', e);
+			throw e;
+		}
+	}
+
+	// Merge into garden.atmo.community/self for accent color changes.
+	if (opts.accentColor !== undefined) {
+		try {
+			const existing = await getRecord(
+				row.pds,
+				row.did,
+				'garden.atmo.community',
+				'self'
+			);
+			const baseValue =
+				existing?.value ?? ({ $type: 'garden.atmo.community' } as Record<string, unknown>);
+			await client.putRecord('garden.atmo.community', 'self', {
+				...baseValue,
+				$type: 'garden.atmo.community',
+				accentColor: opts.accentColor
+			});
+		} catch (e) {
+			console.error('[updateCommunity] failed to update community record', e);
+			throw e;
+		}
+	}
 }
 
 // -------------------------------------------------------------------------
@@ -901,17 +991,29 @@ async function createSubmissionPost(
  *     hiding the button from signed-out visitors who would otherwise be
  *     allowed once they log in.
  */
+/**
+ * Pure check: given an already-fetched config, is `viewerDid` allowed to
+ * submit? Lets callers that already have the config (e.g. the community
+ * page remote, which also needs `creator` from it) skip a second fetch.
+ */
+export async function checkCanSubmit(
+	config: CommunityConfig,
+	viewerDid: string | null
+): Promise<boolean> {
+	if (config.whoCanSubmit !== 'list' || !config.listUri) return true;
+	if (!viewerDid) return true;
+	if (config.creator && config.creator === viewerDid) return true;
+	const members = await fetchListMembers(config.listUri);
+	return members.has(viewerDid);
+}
+
 export async function canUserSubmit(
 	pds: string,
 	communityDid: string,
 	viewerDid: string | null
 ): Promise<boolean> {
 	const config = await fetchCommunityConfig(pds, communityDid);
-	if (config.whoCanSubmit !== 'list' || !config.listUri) return true;
-	if (!viewerDid) return true;
-	if (config.creator && config.creator === viewerDid) return true;
-	const members = await fetchListMembers(config.listUri);
-	return members.has(viewerDid);
+	return checkCanSubmit(config, viewerDid);
 }
 
 /**

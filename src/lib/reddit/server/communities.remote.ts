@@ -11,7 +11,12 @@ import {
 	type PostWithCommunity,
 	type PostSort
 } from '../db';
-import { canUserSubmit, registerCommunity } from '../bot';
+import {
+	registerCommunity,
+	updateCommunity,
+	fetchCommunityConfig,
+	checkCanSubmit
+} from '../bot';
 import { parseListUri } from '../list-uri';
 import {
 	ACCENT_COLORS,
@@ -44,9 +49,11 @@ type PublicCommunity = Omit<
 	postCount: number;
 };
 
-/** PublicCommunity + viewer-specific access state. */
+/** PublicCommunity + viewer-specific access state + creator (from the
+  * on-network garden.atmo.community/self record). */
 type CommunityWithAccess = PublicCommunity & {
 	canSubmit: boolean;
+	creator: string | null;
 };
 
 function sanitize(row: CommunityRow & { post_count?: number }): PublicCommunity {
@@ -180,15 +187,24 @@ export const getCommunity = command(
 		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
 		if (!row) return null;
 
-		// Viewer-specific: can this viewer submit to the community? Reads the
-		// allowlist off the community's PDS and (if gated) checks membership.
-		// Fails open — if the config fetch blows up, we don't want to hide the
-		// submit button from everyone.
-		const canSubmit = await canUserSubmit(row.pds, row.did, locals.did ?? null).catch(
-			() => true
-		);
+		// One-shot fetch of the community's garden.atmo.community/self record.
+		// We need both `creator` (to gate the Edit UI) and `canSubmit` (to
+		// gate the Submit UI) — both derive from this same record + list
+		// membership, so fetch once and reuse. Fails open if the record is
+		// missing or the fetch fails: creator=null (no edit permission,
+		// which is the safe default) and canSubmit=true (don't hide submit
+		// from everyone).
+		let creator: string | null = null;
+		let canSubmit = true;
+		try {
+			const config = await fetchCommunityConfig(row.pds, row.did);
+			creator = config.creator;
+			canSubmit = await checkCanSubmit(config, locals.did ?? null);
+		} catch (e) {
+			console.error('[getCommunity] config fetch failed', e);
+		}
 
-		return { ...sanitize(row), canSubmit };
+		return { ...sanitize(row), canSubmit, creator };
 	}
 );
 
@@ -245,5 +261,71 @@ export const getHomeFeed = command(
 			(input.sort ?? 'hot') as PostSort,
 			input.offset ?? 0
 		);
+	}
+);
+
+export const editCommunity = command(
+	v.object({
+		handle: v.string(),
+		description: v.optional(v.pipe(v.string(), v.maxLength(2048))),
+		accentColor: v.optional(v.picklist(ACCENT_COLORS)),
+		avatar: v.optional(
+			v.object({
+				base64: v.pipe(v.string(), v.maxLength(2 * 1024 * 1024)),
+				mimeType: v.picklist(ALLOWED_AVATAR_MIMES)
+			})
+		)
+	}),
+	async (input) => {
+		const { platform, locals } = getRequestEvent();
+		const env = platform?.env;
+		if (!env || !env.DB) error(500, 'DB binding unavailable');
+		if (!locals.did) error(401, 'You must be signed in to edit a community');
+
+		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
+		if (!row) error(404, 'Community not found');
+
+		// Creator-only gate: fetch the community record and verify the
+		// caller is the recorded creator. If the record has no creator
+		// (legacy rows from before we started writing it), no one can
+		// edit via this endpoint — they'd need the admin secret route.
+		const config = await fetchCommunityConfig(row.pds, row.did);
+		if (!config.creator) {
+			error(403, 'This community has no recorded creator — edit via admin tooling');
+		}
+		if (config.creator !== locals.did) {
+			error(403, 'Only the community creator can edit');
+		}
+
+		let avatarPayload: { bytes: Uint8Array; mimeType: string } | undefined;
+		if (input.avatar) {
+			const bytes = decodeBase64(input.avatar.base64);
+			if (bytes.byteLength > MAX_AVATAR_BYTES) {
+				error(400, `Avatar too large: max ${MAX_AVATAR_BYTES} bytes`);
+			}
+			avatarPayload = { bytes, mimeType: input.avatar.mimeType };
+		}
+
+		if (
+			avatarPayload === undefined &&
+			input.description === undefined &&
+			input.accentColor === undefined
+		) {
+			error(400, 'No fields to update');
+		}
+
+		try {
+			await updateCommunity(env, row, {
+				avatar: avatarPayload,
+				description: input.description,
+				accentColor: input.accentColor
+			});
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			console.error('[editCommunity]', e);
+			error(400, `Update failed: ${msg}`);
+		}
+
+		return { ok: true, did: row.did, handle: row.handle };
 	}
 );

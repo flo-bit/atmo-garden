@@ -1,8 +1,10 @@
 <script lang="ts">
+	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { untrack, onMount, onDestroy } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { Avatar, Button } from '@foxui/core';
-	import { Loader2, Check, UserPlus, Plus } from '@lucide/svelte';
+	import { Loader2, Check, UserPlus, Plus, Pencil } from '@lucide/svelte';
 	import { getCommunity, getCommunityPosts } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
 	import { followUser, unfollowUser, getProfile, resolveProfiles } from '$lib/atproto/server/feed.remote';
@@ -215,23 +217,37 @@
 			<div class="min-w-0 flex-1">
 				<div class="flex items-center justify-between gap-2">
 					<h1 class="text-xl font-bold">c/{communityShort}</h1>
-					<Button
-						variant={isFollowing ? 'secondary' : 'primary'}
-						size="sm"
-						disabled={joinLoading}
-						onclick={onJoinClick}
-						class="gap-1.5"
-					>
-						{#if joinLoading}
-							<Loader2 size={14} class="animate-spin" />
-						{:else if isFollowing}
-							<Check size={14} />
-							Joined
-						{:else}
-							<UserPlus size={14} />
-							Join
+					<div class="flex items-center gap-2">
+						{#if user.did && community.creator === user.did}
+							<Button
+								variant="secondary"
+								size="sm"
+								onclick={() => goto(`/c/${communityShort}/edit`)}
+								class="gap-1.5"
+								aria-label="Edit community"
+							>
+								<Pencil size={14} />
+								Edit
+							</Button>
 						{/if}
-					</Button>
+						<Button
+							variant={isFollowing ? 'secondary' : 'primary'}
+							size="sm"
+							disabled={joinLoading}
+							onclick={onJoinClick}
+							class="gap-1.5"
+						>
+							{#if joinLoading}
+								<Loader2 size={14} class="animate-spin" />
+							{:else if isFollowing}
+								<Check size={14} />
+								Joined
+							{:else}
+								<UserPlus size={14} />
+								Join
+							{/if}
+						</Button>
+					</div>
 				</div>
 				<a
 					href={`https://bsky.app/profile/${community.handle}`}

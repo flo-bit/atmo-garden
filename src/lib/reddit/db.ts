@@ -227,20 +227,22 @@ function sortClauses(sort: PostSort): { where: string; order: string } {
 		case 'hot':
 			// Community lift ranking:
 			//   lift = current_likes − baseline_at_submission   (never < 0)
-			//   score = sqrt(lift + 1) / (submission_age_hours + 2)^1.8
+			//   score = sqrt(lift) / (submission_age_hours + 2)^1.8
 			// sqrt(...) compresses extreme engagement so a post with
 			// thousands of new likes doesn't completely drown out smaller
 			// genuine community discussions. Expressed as `pow(x, 0.5)`
 			// because D1's SQLite gates `log10` (not in the allowed fn
-			// list) but permits `pow`. The HN-style denominator decays
-			// with submission age. Scoped to the last 7 days so stale
-			// submissions fall out of Hot entirely.
+			// list) but permits `pow`. No `+1` on the lift: we WANT
+			// zero-lift posts to score exactly 0 so they drop below
+			// anything with real community engagement. The HN-style
+			// denominator decays with submission age. Scoped to the last
+			// 7 days so stale submissions fall out of Hot entirely.
 			// COALESCE handles rows in the narrow window between migration
 			// and code deploy, and backfilled old rows — both degrade to
 			// "baseline = current" = zero lift, ranking them at the bottom.
 			return {
 				where: `AND p.indexed_at > datetime('now', '-7 days')`,
-				order: `(pow(MAX(p.like_count - COALESCE(p.like_count_at_submission, p.like_count), 0) + 1.0, 0.5) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 1.8)) DESC, p.indexed_at DESC`
+				order: `(pow(MAX(p.like_count - COALESCE(p.like_count_at_submission, p.like_count), 0), 0.5) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 1.8)) DESC, p.indexed_at DESC`
 			};
 		case 'top-day':
 			return {

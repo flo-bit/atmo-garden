@@ -11,7 +11,6 @@ import {
 	type PostWithCommunity
 } from '../db';
 import { registerCommunity } from '../bot';
-import { getRecord } from '../welcomemat';
 import {
 	ACCENT_COLORS,
 	DEFAULT_ACCENT_COLOR,
@@ -29,50 +28,30 @@ function fullHandle(input: string): string {
 // Never ship encrypted key material to the client.
 type PublicCommunity = Omit<
 	CommunityRow,
-	'secret_key_ciphertext' | 'secret_key_iv' | 'public_jwk_json' | 'thumbprint'
+	| 'secret_key_ciphertext'
+	| 'secret_key_iv'
+	| 'public_jwk_json'
+	| 'thumbprint'
+	| 'accent_color'
 > & {
 	accentColor: AccentColor;
-	creator: string | null;
 };
 
-function sanitize(row: CommunityRow): Omit<PublicCommunity, 'accentColor' | 'creator'> {
+function sanitize(row: CommunityRow): PublicCommunity {
 	/* eslint-disable @typescript-eslint/no-unused-vars */
 	const {
 		secret_key_ciphertext,
 		secret_key_iv,
 		public_jwk_json,
 		thumbprint,
+		accent_color,
 		...rest
 	} = row;
 	/* eslint-enable @typescript-eslint/no-unused-vars */
-	return rest;
-}
-
-/**
- * Fetch `garden.atmo.community/self` from the community's PDS and extract
- * the UI-relevant fields. Non-fatal on failure — returns defaults so the
- * community still renders.
- */
-async function fetchCommunityRecord(
-	pds: string,
-	did: string
-): Promise<{ accentColor: AccentColor; creator: string | null }> {
-	try {
-		const rec = await getRecord(pds, did, 'garden.atmo.community', 'self');
-		const value = (rec?.value ?? {}) as { accentColor?: unknown; creator?: unknown };
-		return {
-			accentColor: isAccentColor(value.accentColor) ? value.accentColor : DEFAULT_ACCENT_COLOR,
-			creator: typeof value.creator === 'string' ? value.creator : null
-		};
-	} catch {
-		return { accentColor: DEFAULT_ACCENT_COLOR, creator: null };
-	}
-}
-
-async function enrich(row: CommunityRow): Promise<PublicCommunity> {
-	const base = sanitize(row);
-	const extra = await fetchCommunityRecord(row.pds, row.did);
-	return { ...base, ...extra };
+	return {
+		...rest,
+		accentColor: isAccentColor(accent_color) ? accent_color : DEFAULT_ACCENT_COLOR
+	};
 }
 
 /** Decode a base64-encoded string into a Uint8Array (Workers-safe). */
@@ -150,7 +129,7 @@ export const getCommunities = command(
 		if (!env || !env.DB) return [];
 
 		const rows = await listCommunities(env.DB);
-		return Promise.all(rows.map(enrich));
+		return rows.map(sanitize);
 	}
 );
 
@@ -162,7 +141,7 @@ export const getCommunity = command(
 		if (!env || !env.DB) return null;
 
 		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
-		return row ? enrich(row) : null;
+		return row ? sanitize(row) : null;
 	}
 );
 

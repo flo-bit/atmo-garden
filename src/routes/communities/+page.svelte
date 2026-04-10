@@ -50,7 +50,9 @@
 						href={`/c/${short}`}
 						class="flex items-center gap-3 py-3 transition-colors hover:bg-base-100/50 dark:hover:bg-base-800/30"
 					>
-						<Avatar src={c.avatar ?? undefined} class="size-12 ring-2 ring-accent-500" />
+						{#if c.avatar}
+							<Avatar src={c.avatar} class="size-12 ring-2 ring-accent-500" />
+						{/if}
 						<div class="min-w-0 flex-1">
 							<div class="font-semibold text-accent-600 dark:text-accent-400">c/{short}</div>
 							{#if c.description}

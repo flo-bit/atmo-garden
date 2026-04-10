@@ -154,7 +154,11 @@
 			</div>
 
 			<div
-				class={cn('post-content break-words', compact ? 'text-sm' : 'text-base')}
+				class={cn(
+					'post-content break-words',
+					'[&_a]:text-accent-600 dark:[&_a]:text-accent-400 [&_a]:relative [&_a]:z-10',
+					compact ? 'text-sm' : 'text-base'
+				)}
 				style="overflow-wrap: anywhere;"
 			>
 				{#if data.htmlContent}
@@ -190,14 +194,3 @@
 	</div>
 </div>
 
-<style>
-	.post-content :global(a) {
-		color: var(--color-accent-600);
-		position: relative;
-		z-index: 10;
-	}
-
-	:global(.dark) .post-content :global(a) {
-		color: var(--color-accent-400);
-	}
-</style>

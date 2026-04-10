@@ -33,6 +33,11 @@ import {
 	countGraphemes,
 	PROFILE_DESCRIPTION_MAX_GRAPHEMES
 } from '$lib/utils/graphemes';
+import {
+	DEFAULT_ACCENT_COLOR,
+	isAccentColor,
+	type AccentColor
+} from './accent-colors';
 
 const PUBLIC_APPVIEW = 'https://public.api.bsky.app';
 
@@ -42,6 +47,21 @@ const PUBLIC_APPVIEW = 'https://public.api.bsky.app';
  * Bluesky profile so bsky users can click through to our site, but don't want
  * to show it inside the atmo.garden UI (it's redundant there).
  */
+/**
+ * Fetch the community's `garden.atmo.community/self` record and return its
+ * accent color, validated against the allowlist. Falls back to the default
+ * if the record is missing or the field is invalid.
+ */
+async function fetchRecordAccentColor(pds: string, did: string): Promise<AccentColor> {
+	try {
+		const rec = await getRecord(pds, did, 'garden.atmo.community', 'self');
+		const value = (rec?.value ?? {}) as { accentColor?: unknown };
+		return isAccentColor(value.accentColor) ? value.accentColor : DEFAULT_ACCENT_COLOR;
+	} catch {
+		return DEFAULT_ACCENT_COLOR;
+	}
+}
+
 function stripCommunityLink(desc: string | null | undefined): string | null {
 	if (!desc) return null;
 	const cleaned = desc
@@ -232,7 +252,8 @@ export async function registerCommunity(
 		thumbprint: account.thumbprint,
 		display_name: displayName,
 		avatar: avatarUrl,
-		description: cachedDescription
+		description: cachedDescription,
+		accent_color: accentColor ?? DEFAULT_ACCENT_COLOR
 	});
 
 	return { did: account.did as Did, handle: account.handle };
@@ -549,16 +570,21 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 			errors.push(`${row.handle}: ${String(e)}`);
 		}
 
-		// Best-effort: refresh cached profile metadata (avatar, display name, desc).
+		// Best-effort: refresh cached profile metadata (avatar, display name,
+		// desc) from the appview, and the accent color from the community's
+		// `garden.atmo.community/self` record on the PDS. We fetch both in
+		// parallel since they hit different services.
 		try {
-			const profile = await appview.get('app.bsky.actor.getProfile', {
-				params: { actor: row.did }
-			});
+			const [profile, recordAccent] = await Promise.all([
+				appview.get('app.bsky.actor.getProfile', { params: { actor: row.did } }),
+				fetchRecordAccentColor(row.pds, row.did)
+			]);
 			if (profile.ok) {
 				await updateCommunityProfile(db, row.did, {
 					display_name: profile.data.displayName ?? null,
 					avatar: profile.data.avatar ?? null,
-					description: stripCommunityLink(profile.data.description)
+					description: stripCommunityLink(profile.data.description),
+					accent_color: recordAccent
 				});
 			}
 		} catch {

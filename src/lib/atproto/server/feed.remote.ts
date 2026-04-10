@@ -5,6 +5,41 @@ import type { ResourceUri } from '@atcute/lexicons';
 import { Client, simpleFetchHandler } from '@atcute/client';
 import * as TID from '@atcute/tid';
 
+/**
+ * Fetch viewer-specific state for a batch of post URIs. Returns a map
+ * `{ [uri]: { likeUri: string | null } }` so the caller can render
+ * per-post "liked by me" UI. Requires an authenticated viewer — returns
+ * an empty map when signed out.
+ */
+export const getPostsViewerState = command(
+	v.object({
+		uris: v.array(v.string())
+	}),
+	async (input) => {
+		const { locals } = getRequestEvent();
+		const out: Record<string, { likeUri: string | null }> = {};
+		if (!locals.client || !locals.did) return { states: out };
+
+		for (let i = 0; i < input.uris.length; i += 25) {
+			const batch = input.uris.slice(i, i + 25) as ResourceUri[];
+			try {
+				const res = await locals.client.get('app.bsky.feed.getPosts', {
+					params: { uris: batch }
+				});
+				if (res.ok) {
+					for (const p of res.data.posts) {
+						out[p.uri] = { likeUri: p.viewer?.like ?? null };
+					}
+				}
+			} catch (e) {
+				console.error('[getPostsViewerState] batch failed', e);
+			}
+		}
+
+		return { states: out };
+	}
+);
+
 export const likePost = command(
 	v.object({
 		uri: v.string(),

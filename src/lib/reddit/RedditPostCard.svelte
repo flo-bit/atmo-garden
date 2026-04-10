@@ -6,6 +6,10 @@
 	import { wireEmbedClicks } from '$lib/components/embed';
 	import { blueskyPostToPostData } from '$lib/components';
 	import { Post } from '$lib/components';
+	import { likePost, unlikePost } from '$lib/atproto/server/feed.remote';
+	import { user } from '$lib/atproto/auth.svelte';
+	import { loginModalState } from '$lib/LoginModal.svelte';
+	import { isAccentColor } from './accent-colors';
 	import type { PostRow, PostWithCommunity } from './db';
 	type PostView = Record<string, unknown> & {
 		uri: string;
@@ -17,11 +21,19 @@
 	let {
 		row,
 		quoted,
-		showCommunity = false
+		showCommunity = false,
+		/** Tailwind color label, e.g. "pink". Only needed when `row` is a bare
+		  * PostRow (no community_accent_color). On a PostWithCommunity the row
+		  * already carries the cached accent color. */
+		accentColor: accentColorProp,
+		/** Initial viewer like URI (from getPostsViewerState) — null = not liked. */
+		likeUri: initialLikeUri = null
 	}: {
 		row: CardRow;
 		quoted?: PostView | null;
 		showCommunity?: boolean;
+		accentColor?: string | null;
+		likeUri?: string | null;
 	} = $props();
 
 	const communityHandle = $derived(
@@ -31,6 +43,18 @@
 	const communityAvatar = $derived(
 		'community_avatar' in row ? ((row as PostWithCommunity).community_avatar ?? undefined) : undefined
 	);
+
+	// Prefer the value carried on the row (home feed uses JOIN), fall back
+	// to the explicit prop (community page passes it in), else leave empty
+	// so the ambient page theme bleeds through.
+	const accentClass = $derived.by(() => {
+		const fromRow =
+			'community_accent_color' in row
+				? (row as PostWithCommunity).community_accent_color
+				: null;
+		const candidate = fromRow ?? accentColorProp ?? null;
+		return isAccentColor(candidate) ? candidate : '';
+	});
 
 	const quotedEmbeds = $derived.by(() => {
 		if (!quoted) return [];
@@ -57,16 +81,69 @@
 		if (s < 86400) return `${Math.floor(s / 3600)}h`;
 		return `${Math.floor(s / 86400)}d`;
 	}
+
+	// Optimistic like state. `likeUri` comes in from the parent (seeded by
+	// getPostsViewerState); we also track an optimistic delta on like_count
+	// so the visible number flips immediately on click.
+	let likeUri = $state<string | null>(null);
+	let likeDelta = $state(0);
+	let likeBusy = $state(false);
+	const isLiked = $derived(likeUri !== null);
+	const displayLikeCount = $derived(row.like_count + likeDelta);
+
+	$effect(() => {
+		// Reset optimistic state when the parent swaps in fresh viewer data.
+		// Reading initialLikeUri inside the effect makes it reactive.
+		likeUri = initialLikeUri;
+		likeDelta = 0;
+	});
+
+	async function onLikeClick(e: Event) {
+		e.preventDefault();
+		e.stopPropagation();
+		if (!user.did) {
+			loginModalState.open = true;
+			return;
+		}
+		if (likeBusy) return;
+		likeBusy = true;
+		const wasLiked = isLiked;
+		// Optimistic flip.
+		if (wasLiked) {
+			likeDelta = -1;
+			const prevUri = likeUri;
+			likeUri = null;
+			try {
+				if (prevUri) await unlikePost({ likeUri: prevUri });
+			} catch (err) {
+				console.error('[RedditPostCard] unlike failed', err);
+				likeUri = prevUri;
+				likeDelta = 0;
+			}
+		} else {
+			likeDelta = 1;
+			try {
+				const result = await likePost({ uri: row.uri, cid: row.cid });
+				likeUri = result.uri;
+			} catch (err) {
+				console.error('[RedditPostCard] like failed', err);
+				likeDelta = 0;
+			}
+		}
+		likeBusy = false;
+	}
 </script>
 
-<article class="py-3">
+<article class="py-3 {accentClass}">
 	{#if showCommunity && communityShort}
 		<a
 			href={`/c/${communityShort}`}
 			class="flex items-center gap-2 text-xs leading-none text-base-600 dark:text-base-400 hover:underline"
 		>
-			<Avatar src={communityAvatar} class="size-5" />
-			<span class="font-semibold">c/{communityShort}</span>
+			{#if communityAvatar}
+				<Avatar src={communityAvatar} class="size-5" />
+			{/if}
+			<span class="text-accent-600 dark:text-accent-400 font-semibold">c/{communityShort}</span>
 			<span>·</span>
 			<span>{fmtRelative(row.indexed_at)}</span>
 		</a>
@@ -102,9 +179,16 @@
 	{/if}
 
 	<div class="flex items-center gap-4 text-xs text-base-500 dark:text-base-400">
-		<span class="flex items-center gap-1">
-			<Heart size={14} /> {row.like_count}
-		</span>
+		<button
+			type="button"
+			onclick={onLikeClick}
+			disabled={likeBusy}
+			class="hover:text-accent-500 flex cursor-pointer items-center gap-1 transition-colors {isLiked ? 'text-accent-500' : ''}"
+			aria-label={isLiked ? 'Unlike' : 'Like'}
+		>
+			<Heart size={14} fill={isLiked ? 'currentColor' : 'none'} />
+			{displayLikeCount}
+		</button>
 		<span class="flex items-center gap-1">
 			<MessageCircle size={14} /> {row.reply_count}
 		</span>

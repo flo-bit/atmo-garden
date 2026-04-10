@@ -13,6 +13,11 @@ export type CommunityRow = {
 	display_name: string | null;
 	avatar: string | null;
 	description: string | null;
+	/**
+	 * Read-through cache of the community's accent color. Canonical value
+	 * lives on `garden.atmo.community/self`; cron refreshes this column.
+	 */
+	accent_color: string | null;
 	created_at: string;
 };
 
@@ -35,12 +40,13 @@ export type PostWithCommunity = PostRow & {
 	community_handle: string;
 	community_display_name: string | null;
 	community_avatar: string | null;
+	community_accent_color: string | null;
 };
 
 export async function listCommunities(db: D1Database): Promise<CommunityRow[]> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, created_at FROM communities ORDER BY created_at DESC'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, created_at FROM communities ORDER BY created_at DESC'
 		)
 		.all<CommunityRow>();
 	return res.results ?? [];
@@ -52,7 +58,7 @@ export async function getCommunityByHandle(
 ): Promise<CommunityRow | null> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, created_at FROM communities WHERE handle = ?'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, created_at FROM communities WHERE handle = ?'
 		)
 		.bind(handle)
 		.first<CommunityRow>();
@@ -65,7 +71,7 @@ export async function getCommunityByDid(
 ): Promise<CommunityRow | null> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, created_at FROM communities WHERE did = ?'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, created_at FROM communities WHERE did = ?'
 		)
 		.bind(did)
 		.first<CommunityRow>();
@@ -78,7 +84,7 @@ export async function insertCommunity(
 ): Promise<void> {
 	await db
 		.prepare(
-			'INSERT INTO communities (did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+			'INSERT INTO communities (did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 		)
 		.bind(
 			row.did,
@@ -90,7 +96,8 @@ export async function insertCommunity(
 			row.thumbprint,
 			row.display_name,
 			row.avatar,
-			row.description
+			row.description,
+			row.accent_color
 		)
 		.run();
 }
@@ -98,14 +105,28 @@ export async function insertCommunity(
 export async function updateCommunityProfile(
 	db: D1Database,
 	did: string,
-	data: { display_name: string | null; avatar: string | null; description: string | null }
+	data: {
+		display_name: string | null;
+		avatar: string | null;
+		description: string | null;
+		accent_color?: string | null;
+	}
 ): Promise<void> {
-	await db
-		.prepare(
-			'UPDATE communities SET display_name = ?, avatar = ?, description = ? WHERE did = ?'
-		)
-		.bind(data.display_name, data.avatar, data.description, did)
-		.run();
+	if (data.accent_color !== undefined) {
+		await db
+			.prepare(
+				'UPDATE communities SET display_name = ?, avatar = ?, description = ?, accent_color = ? WHERE did = ?'
+			)
+			.bind(data.display_name, data.avatar, data.description, data.accent_color, did)
+			.run();
+	} else {
+		await db
+			.prepare(
+				'UPDATE communities SET display_name = ?, avatar = ?, description = ? WHERE did = ?'
+			)
+			.bind(data.display_name, data.avatar, data.description, did)
+			.run();
+	}
 }
 
 /**
@@ -186,7 +207,7 @@ export async function getCombinedFeed(
 ): Promise<PostWithCommunity[]> {
 	const res = await db
 		.prepare(
-			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar
+			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
 			 FROM posts p
 			 JOIN communities c ON c.did = p.community_did
 			 ORDER BY p.indexed_at DESC

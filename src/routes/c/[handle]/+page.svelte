@@ -5,7 +5,7 @@
 	import { Loader2, Check, UserPlus, Plus } from '@lucide/svelte';
 	import { getCommunity, getCommunityPosts } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
-	import { followUser, unfollowUser, getProfile } from '$lib/atproto/server/feed.remote';
+	import { followUser, unfollowUser, getProfile, resolveProfiles } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
 	import RedditPostCard from '$lib/reddit/RedditPostCard.svelte';
@@ -14,6 +14,7 @@
 	import type { PostSort, PostWithCommunity } from '$lib/reddit/db';
 
 	type CommunityInfo = Awaited<ReturnType<typeof getCommunity>>;
+	type SubmitterProfile = { handle: string; displayName: string | null; avatar: string | null };
 
 	let loading = $state(true);
 	let postsLoading = $state(false);
@@ -23,7 +24,20 @@
 	let community = $state<CommunityInfo>(null);
 	let posts = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
+	let submitters = $state<Record<string, SubmitterProfile>>({});
 	let sort = $state<PostSort>('hot');
+
+	function uniqueAuthorDids(rows: PostWithCommunity[]): string[] {
+		const seen: Record<string, true> = {};
+		const out: string[] = [];
+		for (const r of rows) {
+			if (r.author_did && !seen[r.author_did]) {
+				seen[r.author_did] = true;
+				out.push(r.author_did);
+			}
+		}
+		return out;
+	}
 
 	// Follow state — populated after the community loads, if the user is
 	// signed in. `followUri` is the AT-URI of the user's follow record
@@ -49,9 +63,14 @@
 			const rows = await getCommunityPosts({ handle, limit: 50, sort: nextSort });
 			posts = rows;
 			quoted = {};
+			submitters = {};
 			if (rows.length > 0) {
-				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
-				quoted = res.posts;
+				const [quotedRes, profileRes] = await Promise.all([
+					getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) }),
+					resolveProfiles({ dids: uniqueAuthorDids(rows) })
+				]);
+				quoted = quotedRes.posts;
+				submitters = profileRes.profiles;
 			}
 			hasMore = rows.length >= 50;
 		} catch (e) {
@@ -73,8 +92,12 @@
 			});
 			posts = [...posts, ...rows];
 			if (rows.length > 0) {
-				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
-				quoted = { ...quoted, ...res.posts };
+				const [quotedRes, profileRes] = await Promise.all([
+					getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) }),
+					resolveProfiles({ dids: uniqueAuthorDids(rows) })
+				]);
+				quoted = { ...quoted, ...quotedRes.posts };
+				submitters = { ...submitters, ...profileRes.profiles };
 			}
 			if (rows.length < 50) {
 				hasMore = false;
@@ -261,6 +284,7 @@
 						row={p}
 						quoted={(quoted[p.quoted_post_uri] ?? undefined) as never}
 						accentColor={community.accentColor}
+						submitter={p.author_did ? (submitters[p.author_did] ?? null) : null}
 						showCommunity
 					/>
 				{/each}

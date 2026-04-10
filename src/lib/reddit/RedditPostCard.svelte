@@ -4,7 +4,7 @@
 	import { Avatar } from '@foxui/core';
 	import { Heart, MessageCircle, Repeat2 } from '@lucide/svelte';
 	import { wireEmbedClicks } from '$lib/components/embed';
-	import { blueskyPostToPostData } from '$lib/components';
+	import { blueskyPostToPostData, numberToHumanReadable } from '$lib/components';
 	import { Post } from '$lib/components';
 	import { likePost, unlikePost } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
@@ -38,12 +38,16 @@
 		/** Tailwind color label, e.g. "pink". Only needed when `row` is a bare
 		  * PostRow (no community_accent_color). On a PostWithCommunity the row
 		  * already carries the cached accent color. */
-		accentColor: accentColorProp
+		accentColor: accentColorProp,
+		/** Resolved profile of the user who submitted this post via DM.
+		  * Caller is responsible for fetching the handle by `row.author_did`. */
+		submitter
 	}: {
 		row: CardRow;
 		quoted?: PostView | null;
 		showCommunity?: boolean;
 		accentColor?: string | null;
+		submitter?: { handle: string; displayName: string | null } | null;
 	} = $props();
 
 	const communityHandle = $derived(
@@ -176,6 +180,16 @@
 		{:else}
 			<span>{fmtRelative(row.indexed_at)}</span>
 		{/if}
+		{#if submitter}
+			<span>·</span>
+			<span>submitted by</span>
+			<a
+				href={`/profile/${submitter.handle}`}
+				class="hover:underline"
+			>
+				@{submitter.handle}
+			</a>
+		{/if}
 	</div>
 
 	{#if row.title}
@@ -203,7 +217,7 @@
 					aria-label={isLiked ? 'Unlike' : 'Like'}
 				>
 					<Heart size={14} fill={isLiked ? 'currentColor' : 'none'} />
-					{displayLikeCount}
+					{numberToHumanReadable(displayLikeCount)}
 				</button>
 				{#if bskyUrl}
 					<a
@@ -214,15 +228,15 @@
 						class="hover:text-accent-500 flex items-center gap-1 transition-colors"
 						aria-label="Reply on Bluesky"
 					>
-						<MessageCircle size={14} /> {replyCount}
+						<MessageCircle size={14} /> {numberToHumanReadable(replyCount)}
 					</a>
 				{:else}
 					<span class="flex items-center gap-1">
-						<MessageCircle size={14} /> {replyCount}
+						<MessageCircle size={14} /> {numberToHumanReadable(replyCount)}
 					</span>
 				{/if}
 				<span class="flex items-center gap-1">
-					<Repeat2 size={14} /> {repostCount}
+					<Repeat2 size={14} /> {numberToHumanReadable(repostCount)}
 				</span>
 				{#if bskyUrl}
 					<Bluesky

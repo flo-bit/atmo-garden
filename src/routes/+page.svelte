@@ -3,9 +3,12 @@
 	import { Loader2 } from '@lucide/svelte';
 	import { getHomeFeed } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
+	import { resolveProfiles } from '$lib/atproto/server/feed.remote';
 	import RedditPostCard from '$lib/reddit/RedditPostCard.svelte';
 	import SortTabs from '$lib/reddit/SortTabs.svelte';
 	import type { PostSort, PostWithCommunity } from '$lib/reddit/db';
+
+	type SubmitterProfile = { handle: string; displayName: string | null; avatar: string | null };
 
 	const PAGE_SIZE = 50;
 
@@ -14,19 +17,37 @@
 	let hasMore = $state(true);
 	let feed = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
+	let submitters = $state<Record<string, SubmitterProfile>>({});
 	let sort = $state<PostSort>('hot');
+
+	function uniqueAuthorDids(rows: PostWithCommunity[]): string[] {
+		const seen: Record<string, true> = {};
+		const out: string[] = [];
+		for (const r of rows) {
+			if (r.author_did && !seen[r.author_did]) {
+				seen[r.author_did] = true;
+				out.push(r.author_did);
+			}
+		}
+		return out;
+	}
 
 	async function loadFeed(nextSort: PostSort) {
 		loading = true;
 		hasMore = true;
 		feed = [];
 		quoted = {};
+		submitters = {};
 		try {
 			const rows = await getHomeFeed({ limit: PAGE_SIZE, sort: nextSort });
 			feed = rows;
 			if (rows.length > 0) {
-				const res = await getQuotedPosts({ uris: rows.map((p) => p.quoted_post_uri) });
-				quoted = res.posts;
+				const [quotedRes, profileRes] = await Promise.all([
+					getQuotedPosts({ uris: rows.map((p) => p.quoted_post_uri) }),
+					resolveProfiles({ dids: uniqueAuthorDids(rows) })
+				]);
+				quoted = quotedRes.posts;
+				submitters = profileRes.profiles;
 			}
 			hasMore = rows.length >= PAGE_SIZE;
 		} catch (e) {
@@ -47,8 +68,12 @@
 			});
 			feed = [...feed, ...rows];
 			if (rows.length > 0) {
-				const res = await getQuotedPosts({ uris: rows.map((p) => p.quoted_post_uri) });
-				quoted = { ...quoted, ...res.posts };
+				const [quotedRes, profileRes] = await Promise.all([
+					getQuotedPosts({ uris: rows.map((p) => p.quoted_post_uri) }),
+					resolveProfiles({ dids: uniqueAuthorDids(rows) })
+				]);
+				quoted = { ...quoted, ...quotedRes.posts };
+				submitters = { ...submitters, ...profileRes.profiles };
 			}
 			if (rows.length < PAGE_SIZE) {
 				hasMore = false;
@@ -99,6 +124,7 @@
 				<RedditPostCard
 					row={p}
 					quoted={(quoted[p.quoted_post_uri] ?? undefined) as never}
+					submitter={p.author_did ? (submitters[p.author_did] ?? null) : null}
 					showCommunity
 				/>
 			{/each}

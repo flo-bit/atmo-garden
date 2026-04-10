@@ -6,6 +6,56 @@ import { Client, simpleFetchHandler } from '@atcute/client';
 import * as TID from '@atcute/tid';
 
 /**
+ * Resolve a batch of DIDs to their minimal profile view (handle + display
+ * name + avatar). Uses the public appview so it works for signed-out
+ * viewers too. Returns a map keyed by DID; missing or failed lookups are
+ * simply absent from the result.
+ */
+export const resolveProfiles = command(
+	v.object({
+		dids: v.array(v.string())
+	}),
+	async (input) => {
+		const out: Record<
+			string,
+			{ handle: string; displayName: string | null; avatar: string | null }
+		> = {};
+		if (input.dids.length === 0) return { profiles: out };
+
+		// Dedupe before hitting the network — a feed with N posts often has
+		// far fewer distinct submitters than N. Uses the public appview,
+		// unauthenticated, so there are no scope concerns.
+		const unique = Array.from(new Set(input.dids));
+		const publicClient = new Client({
+			handler: simpleFetchHandler({ service: 'https://public.api.bsky.app' })
+		});
+
+		for (let i = 0; i < unique.length; i += 25) {
+			const batch = unique.slice(i, i + 25);
+			try {
+				const res = await publicClient.get('app.bsky.actor.getProfiles', {
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					params: { actors: batch as any }
+				});
+				if (res.ok) {
+					for (const p of res.data.profiles) {
+						out[p.did] = {
+							handle: p.handle,
+							displayName: p.displayName ?? null,
+							avatar: p.avatar ?? null
+						};
+					}
+				}
+			} catch (e) {
+				console.error('[resolveProfiles] batch failed', e);
+			}
+		}
+
+		return { profiles: out };
+	}
+);
+
+/**
  * Fetch viewer-specific state for a batch of post URIs. Returns a map
  * `{ [uri]: { likeUri: string | null } }` so the caller can render
  * per-post "liked by me" UI. Requires an authenticated viewer — returns

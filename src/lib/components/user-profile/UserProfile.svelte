@@ -1,14 +1,26 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { Avatar, Button, cn, sanitize, Prose } from '@foxui/core';
+	import { Avatar, cn, sanitize, Prose } from '@foxui/core';
 
-	let { profile, class: className, children }: { profile: {
-		banner?: string;
-		avatar?: string;
-		displayName?: string;
-		handle?: string;
-		description?: string;
-	}, class: string; children?: Snippet } = $props();
+	let {
+		profile,
+		class: className,
+		children,
+		headerActions
+	}: {
+		profile: {
+			banner?: string;
+			avatar?: string;
+			displayName?: string;
+			handle?: string;
+			description?: string;
+		};
+		class: string;
+		children?: Snippet;
+		/** Rendered to the right of the name row (where a Follow button
+		  * would normally live). Caller controls the content entirely. */
+		headerActions?: Snippet;
+	} = $props();
 
 	function linkify(text: string): string {
 		// Escape HTML first
@@ -72,7 +84,11 @@
 				</div>
 			</div>
 
-			<!-- <Button>Follow</Button> -->
+			{#if headerActions}
+				<div class="flex shrink-0 items-center gap-2 sm:pb-1">
+					{@render headerActions()}
+				</div>
+			{/if}
 		</div>
 
 		{#if children}

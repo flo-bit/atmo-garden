@@ -132,6 +132,9 @@
 				<p class="text-sm text-red-500">{error}</p>
 			</div>
 		{:else if profile}
+			{#snippet profileHeaderActions()}
+				<Bluesky href={`https://bsky.app/profile/${profile.handle}`} svgClasses="size-5" />
+			{/snippet}
 			<UserProfile
 				profile={{
 					banner: profile.banner,
@@ -141,6 +144,7 @@
 					description: profile.description
 				}}
 				class=""
+				headerActions={profileHeaderActions}
 			>
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-4 text-sm">
@@ -161,7 +165,6 @@
 						{/if}
 					</div>
 					<div class="flex items-center gap-2">
-						<Bluesky href={`https://bsky.app/profile/${profile.handle}`} svgClasses="size-5" />
 						{#if isOwnProfile}
 							<Button variant="ghost" onclick={logout} class="gap-2" size="sm">
 								<LogOut size={14} />

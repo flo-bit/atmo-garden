@@ -9,15 +9,26 @@
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
 	import RedditPostCard from '$lib/reddit/RedditPostCard.svelte';
-	import type { PostRow } from '$lib/reddit/db';
+	import type { PostWithCommunity } from '$lib/reddit/db';
 
 	type CommunityInfo = Awaited<ReturnType<typeof getCommunity>>;
 
+	type Sort = 'new' | 'top-day' | 'top-week' | 'top-month';
+	const SORT_LABELS: Record<Sort, string> = {
+		'new': 'New',
+		'top-day': 'Today',
+		'top-week': 'This week',
+		'top-month': 'This month'
+	};
+	const SORT_OPTIONS: Sort[] = ['new', 'top-day', 'top-week', 'top-month'];
+
 	let loading = $state(true);
+	let postsLoading = $state(false);
 	let loadError = $state<string | null>(null);
 	let community = $state<CommunityInfo>(null);
-	let posts = $state<PostRow[]>([]);
+	let posts = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
+	let sort = $state<Sort>('new');
 
 	// Follow state — populated after the community loads, if the user is
 	// signed in. `followUri` is the AT-URI of the user's follow record
@@ -26,6 +37,23 @@
 	let joinLoading = $state(false);
 	const isFollowing = $derived(followUri !== null);
 
+	async function loadPosts(handle: string, nextSort: Sort) {
+		postsLoading = true;
+		try {
+			const rows = await getCommunityPosts({ handle, limit: 50, sort: nextSort });
+			posts = rows;
+			quoted = {};
+			if (rows.length > 0) {
+				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
+				quoted = res.posts;
+			}
+		} catch (e) {
+			console.error('[community] loadPosts failed', e);
+		} finally {
+			postsLoading = false;
+		}
+	}
+
 	async function load(handle: string) {
 		loading = true;
 		loadError = null;
@@ -33,6 +61,7 @@
 		posts = [];
 		quoted = {};
 		followUri = null;
+		sort = 'new';
 		try {
 			const info = await getCommunity({ handle });
 			if (!info) {
@@ -41,13 +70,7 @@
 				return;
 			}
 			community = info;
-			const rows = await getCommunityPosts({ handle, limit: 50 });
-			posts = rows;
-
-			if (rows.length > 0) {
-				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
-				quoted = res.posts;
-			}
+			await loadPosts(handle, 'new');
 
 			// If the viewer is signed in, fetch viewer.following from the
 			// community's profile to seed the join-button state.
@@ -65,6 +88,12 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	function onSortClick(next: Sort) {
+		if (next === sort || !community) return;
+		sort = next;
+		loadPosts(community.handle, next);
 	}
 
 	async function onJoinClick() {
@@ -150,9 +179,27 @@
 			Submit to this community by DM'ing <span class="font-mono">@{community.handle}</span> a Bluesky post link with your title.
 		</div>
 
-		{#if posts.length === 0}
+		<div class="mb-2 flex items-center gap-1 text-xs">
+			{#each SORT_OPTIONS as option (option)}
+				<button
+					type="button"
+					onclick={() => onSortClick(option)}
+					class="rounded-full px-3 py-1 font-medium transition-colors {sort === option
+						? 'bg-accent-500 text-white'
+						: 'text-base-600 dark:text-base-400 hover:bg-base-200 dark:hover:bg-base-800'}"
+				>
+					{SORT_LABELS[option]}
+				</button>
+			{/each}
+		</div>
+
+		{#if postsLoading}
+			<div class="flex items-center justify-center py-12">
+				<Loader2 class="text-base-400 animate-spin" size={24} />
+			</div>
+		{:else if posts.length === 0}
 			<p class="text-base-500 dark:text-base-400 py-8 text-center text-sm">
-				No submissions yet.
+				{sort === 'new' ? 'No submissions yet.' : 'Nothing in this window.'}
 			</p>
 		{:else}
 			<div class="divide-base-200 dark:divide-base-800 flex flex-col divide-y">
@@ -161,6 +208,7 @@
 						row={p}
 						quoted={(quoted[p.quoted_post_uri] ?? undefined) as never}
 						accentColor={community.accentColor}
+						showCommunity
 					/>
 				{/each}
 			</div>

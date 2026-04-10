@@ -2,7 +2,7 @@
 	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { goto } from '$app/navigation';
 	import { Avatar } from '@foxui/core';
-	import { Heart, MessageCircle, Repeat2, Repeat } from '@lucide/svelte';
+	import { Heart, MessageCircle, Repeat2 } from '@lucide/svelte';
 	import { wireEmbedClicks } from '$lib/components/embed';
 	import { blueskyPostToPostData } from '$lib/components';
 	import { Post } from '$lib/components';
@@ -150,7 +150,7 @@
 	{#if showCommunity && communityShort}
 		<a
 			href={`/c/${communityShort}`}
-			class="flex items-center gap-2 text-xs leading-none text-base-600 dark:text-base-400 hover:underline"
+			class="flex items-center gap-2 text-xs leading-none text-base-600 dark:text-base-400 hover:underline {row.title ? '' : 'mb-2'}"
 		>
 			{#if communityAvatar}
 				<Avatar src={communityAvatar} class="size-5" />
@@ -160,18 +160,13 @@
 			<span>{fmtRelative(row.indexed_at)}</span>
 		</a>
 	{:else}
-		<div class="text-xs leading-none text-base-500 dark:text-base-400">
+		<div class="text-xs leading-none text-base-500 dark:text-base-400 {row.title ? '' : 'mb-2'}">
 			{fmtRelative(row.indexed_at)}
 		</div>
 	{/if}
 
 	{#if row.title}
 		<h2 class="mb-2 mt-1 text-lg font-semibold leading-tight">{row.title}</h2>
-	{:else}
-		<div class="text-base-500 dark:text-base-400 mt-1 mb-2 flex items-center gap-1 text-xs">
-			<Repeat size={12} />
-			<span>reposted</span>
-		</div>
 	{/if}
 
 	{#if quoted && quotedPostData}

@@ -1,0 +1,4 @@
+- link to bsky
+- submit posts on site
+- fix posts that are replies
+- limit title length?

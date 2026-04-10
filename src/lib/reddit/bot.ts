@@ -225,6 +225,7 @@ export async function registerCommunity(
 	});
 	let displayName: string | null = shortHandle;
 	let avatarUrl: string | null = null;
+	let followersCount: number | null = null;
 	try {
 		const profile = await appview.get('app.bsky.actor.getProfile', {
 			params: { actor: account.did as Did }
@@ -232,6 +233,7 @@ export async function registerCommunity(
 		if (profile.ok) {
 			displayName = profile.data.displayName ?? shortHandle;
 			avatarUrl = profile.data.avatar ?? null;
+			followersCount = profile.data.followersCount ?? 0;
 		}
 	} catch {
 		// non-fatal — relay hasn't indexed yet
@@ -253,7 +255,8 @@ export async function registerCommunity(
 		display_name: displayName,
 		avatar: avatarUrl,
 		description: cachedDescription,
-		accent_color: accentColor ?? DEFAULT_ACCENT_COLOR
+		accent_color: accentColor ?? DEFAULT_ACCENT_COLOR,
+		followers_count: followersCount
 	});
 
 	return { did: account.did as Did, handle: account.handle };
@@ -515,9 +518,15 @@ async function createSubmissionPost(
 }
 
 // -------------------------------------------------------------------------
-// Metric refresh (unchanged — uses public appview)
+// Metric refresh
 // -------------------------------------------------------------------------
 
+/**
+ * Refresh cached metrics on each post from the QUOTED (original) post's
+ * live counts. Powers the "top" sort — the numbers the UI shows and the
+ * numbers we rank by are the original Bluesky post's engagement, not the
+ * community's quote/repost record.
+ */
 export async function refreshPostMetrics(db: D1Database): Promise<number> {
 	const due = await getPostsDueForRefresh(db, 100);
 	if (due.length === 0) return 0;
@@ -528,18 +537,34 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 
 	let refreshed = 0;
 	for (let i = 0; i < due.length; i += 25) {
-		const batch = due.slice(i, i + 25).map((p) => p.uri as ResourceUri);
+		const batch = due.slice(i, i + 25);
+		// Fetch metrics for the set of quoted-post URIs in this batch.
+		// Multiple rows can share the same quoted_post_uri (different
+		// communities quoting the same post), so we dedupe the fetch set
+		// and then fan out the update to every matching row.
+		const quotedUris = Array.from(
+			new Set(batch.map((p) => p.quoted_post_uri))
+		) as ResourceUri[];
 		try {
 			const res = await appview.get('app.bsky.feed.getPosts', {
-				params: { uris: batch }
+				params: { uris: quotedUris }
 			});
 			if (!res.ok) continue;
+			const metricsByQuoted = new Map<
+				string,
+				{ like_count: number; reply_count: number; repost_count: number }
+			>();
 			for (const post of res.data.posts) {
-				await updatePostMetrics(db, post.uri, {
+				metricsByQuoted.set(post.uri, {
 					like_count: post.likeCount ?? 0,
 					reply_count: post.replyCount ?? 0,
 					repost_count: post.repostCount ?? 0
 				});
+			}
+			for (const row of batch) {
+				const m = metricsByQuoted.get(row.quoted_post_uri);
+				if (!m) continue;
+				await updatePostMetrics(db, row.uri, m);
 				refreshed++;
 			}
 		} catch (e) {
@@ -557,6 +582,7 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 export async function runCronTick(env: App.Platform['env']): Promise<{
 	communitiesChecked: number;
 	postsCreated: number;
+	postsRefreshed: number;
 	errors: string[];
 }> {
 	const db = env.DB;
@@ -579,9 +605,11 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		}
 
 		// Best-effort: refresh cached profile metadata (avatar, display name,
-		// desc) from the appview, and the accent color from the community's
-		// `garden.atmo.community/self` record on the PDS. We fetch both in
-		// parallel since they hit different services.
+		// desc, follower count) from the appview, and the accent color from
+		// the community's `garden.atmo.community/self` record on the PDS.
+		// Both requests run in parallel since they hit different services.
+		// `followersCount` already comes back on every getProfile call, so
+		// caching it is free — no separate refresh schedule needed.
 		try {
 			const [profile, recordAccent] = await Promise.all([
 				appview.get('app.bsky.actor.getProfile', { params: { actor: row.did } }),
@@ -592,7 +620,8 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 					display_name: profile.data.displayName ?? null,
 					avatar: profile.data.avatar ?? null,
 					description: stripCommunityLink(profile.data.description),
-					accent_color: recordAccent
+					accent_color: recordAccent,
+					followers_count: profile.data.followersCount ?? 0
 				});
 			}
 		} catch {
@@ -600,9 +629,15 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		}
 	}
 
+	const postsRefreshed = await refreshPostMetrics(db).catch((e) => {
+		errors.push(`refresh: ${String(e)}`);
+		return 0;
+	});
+
 	return {
 		communitiesChecked: communities.length,
 		postsCreated,
+		postsRefreshed,
 		errors
 	};
 }

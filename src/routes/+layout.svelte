@@ -37,7 +37,7 @@
 		</Button>
 	{:else}
 		<Button onclick={() => loginModalState.open = true} variant="ghost" size="icon" class="mb-2">
-			<Avatar class="size-8" />
+			<Avatar class="size-6" />
 		</Button>
 	{/if}
 </Sidebar>

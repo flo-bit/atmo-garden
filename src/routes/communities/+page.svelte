@@ -19,6 +19,13 @@
 			loading = false;
 		}
 	});
+
+	function formatCount(n: number): string {
+		if (n < 1000) return String(n);
+		if (n < 10_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+		if (n < 1_000_000) return Math.floor(n / 1000) + 'k';
+		return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+	}
 </script>
 
 <div class="mx-auto w-full max-w-lg px-4 py-6">
@@ -60,6 +67,12 @@
 									{c.description}
 								</div>
 							{/if}
+						</div>
+						<div class="text-base-500 dark:text-base-400 shrink-0 text-right text-xs">
+							<div class="text-base-700 dark:text-base-300 font-semibold">
+								{formatCount(c.followersCount)}
+							</div>
+							<div>members</div>
 						</div>
 					</a>
 				</li>

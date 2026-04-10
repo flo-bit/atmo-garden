@@ -7,8 +7,8 @@ import {
 	listCommunities,
 	getCommunityByHandle,
 	type CommunityRow,
-	type PostRow,
-	type PostWithCommunity
+	type PostWithCommunity,
+	type PostSort
 } from '../db';
 import { registerCommunity } from '../bot';
 import {
@@ -33,8 +33,10 @@ type PublicCommunity = Omit<
 	| 'public_jwk_json'
 	| 'thumbprint'
 	| 'accent_color'
+	| 'followers_count'
 > & {
 	accentColor: AccentColor;
+	followersCount: number;
 };
 
 function sanitize(row: CommunityRow): PublicCommunity {
@@ -45,12 +47,14 @@ function sanitize(row: CommunityRow): PublicCommunity {
 		public_jwk_json,
 		thumbprint,
 		accent_color,
+		followers_count,
 		...rest
 	} = row;
 	/* eslint-enable @typescript-eslint/no-unused-vars */
 	return {
 		...rest,
-		accentColor: isAccentColor(accent_color) ? accent_color : DEFAULT_ACCENT_COLOR
+		accentColor: isAccentColor(accent_color) ? accent_color : DEFAULT_ACCENT_COLOR,
+		followersCount: followers_count ?? 0
 	};
 }
 
@@ -146,8 +150,12 @@ export const getCommunity = command(
 );
 
 export const getCommunityPosts = command(
-	v.object({ handle: v.string(), limit: v.optional(v.number()) }),
-	async (input): Promise<PostRow[]> => {
+	v.object({
+		handle: v.string(),
+		limit: v.optional(v.number()),
+		sort: v.optional(v.picklist(['new', 'top-day', 'top-week', 'top-month']))
+	}),
+	async (input): Promise<PostWithCommunity[]> => {
 		const { platform } = getRequestEvent();
 		const env = platform?.env;
 		if (!env || !env.DB) return [];
@@ -155,7 +163,12 @@ export const getCommunityPosts = command(
 		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
 		if (!row) return [];
 
-		return getRecentPostsForCommunity(env.DB, row.did, input.limit ?? 50);
+		return getRecentPostsForCommunity(
+			env.DB,
+			row.did,
+			input.limit ?? 50,
+			(input.sort ?? 'new') as PostSort
+		);
 	}
 );
 

@@ -56,12 +56,15 @@ export type CommunityConfig = {
 	accentColor: AccentColor;
 	whoCanSubmit: WhoCanSubmit;
 	listUri: string | null;
+	/** DID of the account that registered the community. Null for legacy rows. */
+	creator: string | null;
 };
 
 const DEFAULT_COMMUNITY_CONFIG: CommunityConfig = {
 	accentColor: DEFAULT_ACCENT_COLOR,
 	whoCanSubmit: 'everyone',
-	listUri: null
+	listUri: null,
+	creator: null
 };
 
 /**
@@ -76,11 +79,16 @@ async function fetchCommunityConfig(pds: string, did: string): Promise<Community
 			accentColor?: unknown;
 			whoCanSubmit?: unknown;
 			listUri?: unknown;
+			creator?: unknown;
 		};
 		return {
 			accentColor: isAccentColor(value.accentColor) ? value.accentColor : DEFAULT_ACCENT_COLOR,
 			whoCanSubmit: value.whoCanSubmit === 'list' ? 'list' : 'everyone',
-			listUri: typeof value.listUri === 'string' ? value.listUri : null
+			listUri: typeof value.listUri === 'string' ? value.listUri : null,
+			creator:
+				typeof value.creator === 'string' && value.creator.startsWith('did:')
+					? value.creator
+					: null
 		};
 	} catch {
 		return { ...DEFAULT_COMMUNITY_CONFIG };
@@ -192,6 +200,90 @@ see posts of this community sorted by Hot/New/Top on ${domainText}`;
 	} catch (e) {
 		console.error('[createWelcomePost] failed', e);
 		return null;
+	}
+}
+
+// -------------------------------------------------------------------------
+// atmo.garden discovery list
+// -------------------------------------------------------------------------
+
+/**
+ * Add a newly-registered community's DID to the public atmo.garden discovery
+ * list (e.g. https://bsky.app/profile/atmo.garden/lists/3mj2xb5hpp74n).
+ *
+ * Authenticates against the atmo.garden account with a classic Bluesky app
+ * password — OAuth is overkill for a single-account bot. Uses raw fetch so
+ * we don't drag in a full atproto client just for this.
+ *
+ * Best-effort: if any env var is missing we silently skip. If the login or
+ * createRecord fails we log and return — a flaky list-add must not break
+ * community registration.
+ */
+async function addCommunityToDiscoveryList(
+	env: App.Platform['env'],
+	communityDid: Did
+): Promise<void> {
+	const pds = env.ATMO_GARDEN_PDS;
+	const identifier = env.ATMO_GARDEN_IDENTIFIER;
+	const password = env.ATMO_GARDEN_APP_PASSWORD;
+	const listRkey = env.ATMO_GARDEN_LIST_RKEY;
+
+	if (!pds || !identifier || !password || !listRkey) {
+		console.log(
+			'[discovery-list] skipped — ATMO_GARDEN_* env vars not fully configured'
+		);
+		return;
+	}
+
+	try {
+		// 1. Log in.
+		const sessionRes = await fetch(`${pds}/xrpc/com.atproto.server.createSession`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ identifier, password })
+		});
+		if (!sessionRes.ok) {
+			throw new Error(
+				`createSession failed (${sessionRes.status}): ${await sessionRes.text()}`
+			);
+		}
+		const session = (await sessionRes.json()) as {
+			did: string;
+			accessJwt: string;
+		};
+
+		// 2. Build the list at-URI from the logged-in account's own DID +
+		//    the configured rkey. This means the env var is just the short
+		//    rkey — no handle resolution required.
+		const listUri = `at://${session.did}/app.bsky.graph.list/${listRkey}`;
+
+		// 3. Create the listitem record.
+		const createRes = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${session.accessJwt}`
+			},
+			body: JSON.stringify({
+				repo: session.did,
+				collection: 'app.bsky.graph.listitem',
+				record: {
+					$type: 'app.bsky.graph.listitem',
+					subject: communityDid,
+					list: listUri,
+					createdAt: new Date().toISOString()
+				}
+			})
+		});
+		if (!createRes.ok) {
+			throw new Error(
+				`createRecord listitem failed (${createRes.status}): ${await createRes.text()}`
+			);
+		}
+
+		console.log(`[discovery-list] added ${communityDid} to ${listUri}`);
+	} catch (e) {
+		console.error('[discovery-list] failed', e);
 	}
 }
 
@@ -406,6 +498,11 @@ export async function registerCommunity(
 		followers_count: followersCount
 	});
 
+	// Add the new community to the public atmo.garden discovery list so it
+	// shows up for anyone subscribed to the list on Bluesky. Non-fatal —
+	// the community is fully registered by this point regardless.
+	await addCommunityToDiscoveryList(env, account.did as Did);
+
 	return { did: account.did as Did, handle: account.handle };
 }
 
@@ -612,6 +709,9 @@ export async function processCommunityDms(
 
 	function isAllowed(senderDid: string): boolean {
 		if (!gated) return true;
+		// Community creator bypasses the allowlist — they shouldn't be
+		// locked out of their own community by their own list config.
+		if (config.creator && config.creator === senderDid) return true;
 		return allowedMembers?.has(senderDid) ?? false;
 	}
 
@@ -778,6 +878,35 @@ async function createSubmissionPost(
 // -------------------------------------------------------------------------
 
 /**
+ * Is `viewerDid` allowed to submit to this community? Reads the community's
+ * `garden.atmo.community/self` record off the PDS to get the access policy;
+ * for list-gated communities also fetches the allowlist members.
+ *
+ * The community creator is always allowed, regardless of allowlist state —
+ * they registered the community and should never be locked out of their
+ * own space.
+ *
+ * Semantics for anonymous viewers (`viewerDid === null`):
+ *   - non-gated community → true
+ *   - list-gated → true (optimistic — user may still be prompted to log in
+ *     before the submission actually goes through). This keeps the UI from
+ *     hiding the button from signed-out visitors who would otherwise be
+ *     allowed once they log in.
+ */
+export async function canUserSubmit(
+	pds: string,
+	communityDid: string,
+	viewerDid: string | null
+): Promise<boolean> {
+	const config = await fetchCommunityConfig(pds, communityDid);
+	if (config.whoCanSubmit !== 'list' || !config.listUri) return true;
+	if (!viewerDid) return true;
+	if (config.creator && config.creator === viewerDid) return true;
+	const members = await fetchListMembers(config.listUri);
+	return members.has(viewerDid);
+}
+
+/**
  * Reason a web submission was dropped. Surfaced for logging; callers don't
  * branch on these today.
  */
@@ -806,12 +935,16 @@ export async function processWebSubmission(
 
 	// Access control: re-read the community config on every submission so
 	// allowlist flips take effect immediately. Cheap compared to the DM path
-	// because we don't have a convo loop to amortize over.
+	// because we don't have a convo loop to amortize over. The creator is
+	// always allowed through, matching the UI-side check in `canUserSubmit`.
 	const config = await fetchCommunityConfig(row.pds, row.did);
 	if (config.whoCanSubmit === 'list' && config.listUri) {
-		const members = await fetchListMembers(config.listUri);
-		if (!members.has(input.submitterDid)) {
-			return { ok: false, reason: 'not-allowed' };
+		const isCreator = config.creator && config.creator === input.submitterDid;
+		if (!isCreator) {
+			const members = await fetchListMembers(config.listUri);
+			if (!members.has(input.submitterDid)) {
+				return { ok: false, reason: 'not-allowed' };
+			}
 		}
 	}
 

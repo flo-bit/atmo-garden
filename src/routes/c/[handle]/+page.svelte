@@ -2,27 +2,18 @@
 	import { untrack, onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { Avatar, Button } from '@foxui/core';
-	import { Loader2, Check, UserPlus } from '@lucide/svelte';
+	import { Loader2, Check, UserPlus, Plus } from '@lucide/svelte';
 	import { getCommunity, getCommunityPosts } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
 	import { followUser, unfollowUser, getProfile } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
 	import RedditPostCard from '$lib/reddit/RedditPostCard.svelte';
-	import type { PostWithCommunity } from '$lib/reddit/db';
+	import SubmitModal from '$lib/reddit/SubmitModal.svelte';
+	import SortTabs from '$lib/reddit/SortTabs.svelte';
+	import type { PostSort, PostWithCommunity } from '$lib/reddit/db';
 
 	type CommunityInfo = Awaited<ReturnType<typeof getCommunity>>;
-
-	type Sort = 'hot' | 'new' | 'top-day' | 'top-week' | 'top-month';
-	type TopSort = 'top-day' | 'top-week' | 'top-month';
-	type PrimaryTab = 'hot' | 'new' | 'top';
-
-	const TOP_SORT_LABELS: Record<TopSort, string> = {
-		'top-day': 'Today',
-		'top-week': 'This week',
-		'top-month': 'This month'
-	};
-	const TOP_SORT_OPTIONS: TopSort[] = ['top-day', 'top-week', 'top-month'];
 
 	let loading = $state(true);
 	let postsLoading = $state(false);
@@ -32,10 +23,7 @@
 	let community = $state<CommunityInfo>(null);
 	let posts = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
-	let sort = $state<Sort>('hot');
-	const primaryTab = $derived<PrimaryTab>(
-		sort === 'hot' ? 'hot' : sort === 'new' ? 'new' : 'top'
-	);
+	let sort = $state<PostSort>('hot');
 
 	// Follow state — populated after the community loads, if the user is
 	// signed in. `followUri` is the AT-URI of the user's follow record
@@ -44,7 +32,17 @@
 	let joinLoading = $state(false);
 	const isFollowing = $derived(followUri !== null);
 
-	async function loadPosts(handle: string, nextSort: Sort) {
+	let submitOpen = $state(false);
+
+	function onSubmitClick() {
+		if (!user.did) {
+			loginModalState.open = true;
+			return;
+		}
+		submitOpen = true;
+	}
+
+	async function loadPosts(handle: string, nextSort: PostSort) {
 		postsLoading = true;
 		hasMore = true;
 		try {
@@ -144,16 +142,9 @@
 		}
 	}
 
-	function onSortClick(next: Sort) {
-		if (next === sort || !community) return;
-		sort = next;
+	function onSortChange(next: PostSort) {
+		if (!community) return;
 		loadPosts(community.handle, next);
-	}
-
-	function onPrimaryTabClick(tab: PrimaryTab) {
-		if (tab === primaryTab) return;
-		const next: Sort = tab === 'hot' ? 'hot' : tab === 'new' ? 'new' : 'top-day';
-		onSortClick(next);
 	}
 
 	async function onJoinClick() {
@@ -185,7 +176,7 @@
 	});
 </script>
 
-<div class="mx-auto w-full max-w-lg px-4 py-6 {community?.accentColor ?? ''}">
+<div class="mx-auto w-full max-w-xl px-4 py-6 {community?.accentColor ?? ''}">
 	{#if loading}
 		<div class="flex items-center justify-center py-12">
 			<Loader2 class="text-base-400 animate-spin" size={28} />
@@ -194,7 +185,7 @@
 		<p class="text-sm text-red-500">{loadError}</p>
 	{:else if community}
 		{@const communityShort = community.handle.split('.')[0]}
-		<header class="mb-6 flex items-start gap-4">
+		<header class="mb-4 flex items-start gap-4">
 			{#if community.avatar}
 				<Avatar src={community.avatar} class="size-24 ring-2 ring-accent-500" />
 			{/if}
@@ -235,56 +226,25 @@
 			</div>
 		</header>
 
-		<div class="border-base-200 dark:border-base-800 mb-4 rounded-xl border bg-base-50 dark:bg-base-900/50 p-3 text-xs text-base-500 dark:text-base-400">
-			Submit to this community by DM'ing <span class="font-mono">@{community.handle}</span> a Bluesky post link with your title.
-		</div>
-
-		<div class="mb-3 flex flex-col gap-2">
-			<div class="flex items-center gap-1 text-sm">
-				<button
-					type="button"
-					onclick={() => onPrimaryTabClick('hot')}
-					class="rounded-full px-4 py-1.5 font-semibold transition-colors {primaryTab === 'hot'
-						? 'bg-accent-500 text-white shadow-sm'
-						: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
-				>
-					Hot
-				</button>
-				<button
-					type="button"
-					onclick={() => onPrimaryTabClick('new')}
-					class="rounded-full px-4 py-1.5 font-semibold transition-colors {primaryTab === 'new'
-						? 'bg-accent-500 text-white shadow-sm'
-						: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
-				>
-					New
-				</button>
-				<button
-					type="button"
-					onclick={() => onPrimaryTabClick('top')}
-					class="rounded-full px-4 py-1.5 font-semibold transition-colors {primaryTab === 'top'
-						? 'bg-accent-500 text-white shadow-sm'
-						: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
-				>
-					Top
-				</button>
+		{#if community.canSubmit}
+			<div class="mb-6">
+				<Button variant="primary" onclick={onSubmitClick} class="gap-2 mb-2">
+					<Plus size={16} />
+					Submit post
+				</Button>
+				<p class="text-xs text-base-500 dark:text-base-400">
+					Or DM <a href={`https://bsky.app/profile/${community.handle}`} target="_blank" rel="noopener noreferrer" class="font-mono text-accent-600 dark:text-accent-400">@{community.handle}</a> a Bluesky post link to submit via chat.
+				</p>
 			</div>
-			{#if primaryTab === 'top'}
-				<div class="flex items-center gap-1 rounded-full bg-base-100 dark:bg-base-900/60 p-1 text-xs w-fit">
-					{#each TOP_SORT_OPTIONS as option (option)}
-						<button
-							type="button"
-							onclick={() => onSortClick(option)}
-							class="rounded-full px-3 py-1 font-medium transition-colors {sort === option
-								? 'bg-accent-500 text-white shadow-sm'
-								: 'text-base-800 dark:text-base-200 hover:bg-base-200 dark:hover:bg-base-800'}"
-						>
-							{TOP_SORT_LABELS[option]}
-						</button>
-					{/each}
-				</div>
-			{/if}
-		</div>
+		{:else}
+			<div
+				class="mb-6 border-base-200 dark:border-base-800 rounded-xl border bg-base-200 dark:bg-base-950/50 p-3 text-xs text-base-500 dark:text-base-400"
+			>
+				This community's allowlist doesn't include your account, so you can't submit posts here.
+			</div>
+		{/if}
+
+		<SortTabs bind:sort onchange={onSortChange} class="mb-3" />
 
 		{#if postsLoading}
 			<div class="flex items-center justify-center py-12">
@@ -314,5 +274,14 @@
 				<p class="text-base-400 py-6 text-center text-sm">You've reached the end</p>
 			{/if}
 		{/if}
+
+		<SubmitModal
+			bind:open={submitOpen}
+			community={{ handle: community.handle, did: community.did }}
+			accentColor={community.accentColor}
+			onSubmitted={() => {
+				if (community) loadPosts(community.handle, sort);
+			}}
+		/>
 	{/if}
 </div>

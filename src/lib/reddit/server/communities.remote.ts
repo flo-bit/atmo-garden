@@ -11,7 +11,7 @@ import {
 	type PostWithCommunity,
 	type PostSort
 } from '../db';
-import { registerCommunity } from '../bot';
+import { canUserSubmit, registerCommunity } from '../bot';
 import { parseListUri } from '../list-uri';
 import {
 	ACCENT_COLORS,
@@ -39,6 +39,11 @@ type PublicCommunity = Omit<
 > & {
 	accentColor: AccentColor;
 	followersCount: number;
+};
+
+/** PublicCommunity + viewer-specific access state. */
+type CommunityWithAccess = PublicCommunity & {
+	canSubmit: boolean;
 };
 
 function sanitize(row: CommunityRow): PublicCommunity {
@@ -162,13 +167,23 @@ export const getCommunities = command(
 
 export const getCommunity = command(
 	v.object({ handle: v.string() }),
-	async (input): Promise<PublicCommunity | null> => {
-		const { platform } = getRequestEvent();
+	async (input): Promise<CommunityWithAccess | null> => {
+		const { platform, locals } = getRequestEvent();
 		const env = platform?.env;
 		if (!env || !env.DB) return null;
 
 		const row = await getCommunityByHandle(env.DB, fullHandle(input.handle));
-		return row ? sanitize(row) : null;
+		if (!row) return null;
+
+		// Viewer-specific: can this viewer submit to the community? Reads the
+		// allowlist off the community's PDS and (if gated) checks membership.
+		// Fails open — if the config fetch blows up, we don't want to hide the
+		// submit button from everyone.
+		const canSubmit = await canUserSubmit(row.pds, row.did, locals.did ?? null).catch(
+			() => true
+		);
+
+		return { ...sanitize(row), canSubmit };
 	}
 );
 
@@ -209,12 +224,21 @@ export const getCommunityPost = command(
 );
 
 export const getHomeFeed = command(
-	v.object({ limit: v.optional(v.number()) }),
+	v.object({
+		limit: v.optional(v.number()),
+		offset: v.optional(v.number()),
+		sort: v.optional(v.picklist(['hot', 'new', 'top-day', 'top-week', 'top-month']))
+	}),
 	async (input): Promise<PostWithCommunity[]> => {
 		const { platform } = getRequestEvent();
 		const env = platform?.env;
 		if (!env || !env.DB) return [];
 
-		return getCombinedFeed(env.DB, input.limit ?? 50);
+		return getCombinedFeed(
+			env.DB,
+			input.limit ?? 50,
+			(input.sort ?? 'hot') as PostSort,
+			input.offset ?? 0
+		);
 	}
 );

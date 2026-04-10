@@ -283,17 +283,26 @@ export async function getPostByUri(
 
 export async function getCombinedFeed(
 	db: D1Database,
-	limit = 50
+	limit = 50,
+	sort: PostSort = 'hot',
+	offset = 0
 ): Promise<PostWithCommunity[]> {
+	const { where, order } = sortClauses(sort);
+	// sortClauses returns a fragment starting with `AND` since it was
+	// written for the community-scoped query that always has a
+	// `WHERE p.community_did = ?` clause. For the home feed there's no
+	// base WHERE, so we rewrite the leading `AND` to `WHERE`.
+	const whereClause = where ? where.replace(/^\s*AND\s+/, 'WHERE ') : '';
 	const res = await db
 		.prepare(
 			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
 			 FROM posts p
 			 JOIN communities c ON c.did = p.community_did
-			 ORDER BY p.indexed_at DESC
-			 LIMIT ?`
+			 ${whereClause}
+			 ORDER BY ${order}
+			 LIMIT ? OFFSET ?`
 		)
-		.bind(limit)
+		.bind(limit, offset)
 		.all<PostWithCommunity>();
 	return res.results ?? [];
 }

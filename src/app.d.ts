@@ -27,6 +27,13 @@ declare global {
 				ROOKERY_HOSTNAME: string;
 				ROOKERY_SIGNUP_SECRET: string;
 				CRON_SECRET?: string;
+				// Optional: credentials for adding newly-registered communities
+				// to the public atmo.garden discovery list. If any of these are
+				// missing, registration still succeeds but skips the list-add.
+				ATMO_GARDEN_PDS?: string;
+				ATMO_GARDEN_IDENTIFIER?: string;
+				ATMO_GARDEN_APP_PASSWORD?: string;
+				ATMO_GARDEN_LIST_RKEY?: string;
 			};
 		}
 	}

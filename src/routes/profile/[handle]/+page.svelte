@@ -122,7 +122,7 @@
 </script>
 
 <div>
-	<div class="mx-auto w-full max-w-lg flex-1">
+	<div class="mx-auto w-full max-w-xl flex-1">
 		{#if loading}
 			<div class="flex items-center justify-center py-12">
 				<Loader2 class="text-base-400 animate-spin" size={28} />

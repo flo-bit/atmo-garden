@@ -52,7 +52,7 @@
 </script>
 
 <div>
-	<div class="mx-auto w-full max-w-lg">
+	<div class="mx-auto w-full max-w-xl">
 		<div class="flex items-center gap-2 px-4 pt-4 pb-3">
 			<Hash class="text-base-400" size={20} />
 			<h1 class="text-base-900 dark:text-base-100 text-lg font-semibold">{tag}</h1>

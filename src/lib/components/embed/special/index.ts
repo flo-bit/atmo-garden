@@ -2,6 +2,7 @@ import type { Component } from 'svelte';
 import type { EmbedExternalData } from '../types';
 import YouTubeEmbed from './YouTubeEmbed.svelte';
 import TenorEmbed from './TenorEmbed.svelte';
+import PlyrEmbed, { toPlyrEmbed } from './PlyrEmbed.svelte';
 import AppEmbed from './AppEmbed.svelte';
 import { findEmbedApp, type EmbedAppConfig } from './embed-registry';
 
@@ -26,6 +27,10 @@ export const specialEmbeds: SpecialEmbed[] = [
 		},
 		component: TenorEmbed
 	},
+	{
+		match: (data) => toPlyrEmbed(data.external.href) !== null,
+		component: PlyrEmbed
+	}
 ];
 
 export function findSpecialEmbed(data: EmbedExternalData): SpecialEmbed | undefined {
@@ -33,7 +38,7 @@ export function findSpecialEmbed(data: EmbedExternalData): SpecialEmbed | undefi
 	const special = specialEmbeds.find((e) => e.match(data));
 	if (special) return special;
 
-	// Check app embed registry
+	// Check app embed registry (atmo.rsvp, stream.place)
 	const appConfig = findEmbedApp(data.external.href);
 	if (appConfig) {
 		return {

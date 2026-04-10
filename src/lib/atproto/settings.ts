@@ -24,6 +24,9 @@ export const scopes = [
 	'repo:app.bsky.feed.like',
 	'repo:app.bsky.graph.follow',
 	'repo:garden.atmo.submission',
+	// Needed so the atmo.rsvp iframe embed can create + delete RSVP records
+	// on the viewer's repo when they RSVP to a calendar event inside a post.
+	'repo:community.lexicon.calendar.rsvp',
 	// Any bsky appview RPC (getProfile, getPosts, getPostThread, etc.) —
 	// needed because `locals.client` proxies reads through the user's PDS.
 	// Canonical form per https://atproto.com/specs/permission uses query-

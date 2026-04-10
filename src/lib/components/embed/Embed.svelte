@@ -4,10 +4,7 @@
 	import Images from './Images.svelte';
 	import Video from './Video.svelte';
 	import QuotedPost from './QuotedPost.svelte';
-	// Special embeds (YouTube/Tenor/Atmo RSVP/Iframe/etc.) are intentionally
-	// disabled here — atmo.social only renders generic External cards for
-	// link previews. The special components are still in `./special` if we
-	// want to opt back in later.
+	import { findSpecialEmbed } from './special';
 
 	const {
 		embed,
@@ -16,11 +13,15 @@
 		embed: Embed;
 		showSensitive?: boolean;
 	} = $props();
+
+	const specialEmbed = $derived(embed.type === 'external' ? findSpecialEmbed(embed) : undefined);
 </script>
 
 <div class="flex min-w-0 flex-col items-start gap-2 overflow-hidden pt-3 text-sm">
 	{#if embed.type === 'images'}
 		<Images data={embed} {showSensitive} />
+	{:else if embed.type === 'external' && embed.external && specialEmbed}
+		<specialEmbed.component data={embed} config={specialEmbed.appConfig} />
 	{:else if embed.type === 'external' && embed.external}
 		<External data={embed} />
 	{:else if embed.type === 'video' && embed.video}

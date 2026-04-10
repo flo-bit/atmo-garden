@@ -18,7 +18,7 @@
 	let feed = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
 	let submitters = $state<Record<string, SubmitterProfile>>({});
-	let sort = $state<PostSort>('hot');
+	let sort = $state<PostSort>('new');
 
 	function uniqueAuthorDids(rows: PostWithCommunity[]): string[] {
 		const seen: Record<string, true> = {};
@@ -94,7 +94,7 @@
 	}
 
 	onMount(() => {
-		loadFeed('hot');
+		loadFeed('new');
 		window.addEventListener('scroll', handleScroll, { passive: true });
 	});
 

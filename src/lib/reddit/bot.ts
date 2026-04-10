@@ -24,7 +24,7 @@ import {
 	updatePostMetrics,
 	type CommunityRow
 } from './db';
-import { getPostCid, parseSubmission } from './submission';
+import { getPostMeta, parseSubmission } from './submission';
 import {
 	WelcomeMatClient,
 	createRookeryAccount,
@@ -797,12 +797,16 @@ async function createSubmissionPost(
 	submission: { title: string; postUri: ResourceUri },
 	senderDid: Did
 ): Promise<boolean> {
-	// Resolve the CID of the post being quoted via the public appview.
+	// Resolve the CID + current like count of the post being quoted. The
+	// CID feeds the embed record; the like count becomes the baseline for
+	// the Hot sort's community-lift calculation.
 	const appview = new Client({
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
-	const quotedCid = await getPostCid(appview, submission.postUri);
-	if (!quotedCid) return false;
+	const quotedMeta = await getPostMeta(appview, submission.postUri);
+	if (!quotedMeta) return false;
+	const quotedCid = quotedMeta.cid;
+	const baselineLikeCount = quotedMeta.likeCount;
 
 	const createdAt = new Date().toISOString();
 	const isRepost = submission.title.length === 0;
@@ -865,9 +869,13 @@ async function createSubmissionPost(
 		quoted_post_uri: submission.postUri,
 		quoted_post_cid: quotedCid,
 		author_did: senderDid,
-		like_count: 0,
+		// Seed current + baseline to the same snapshot. The cron's
+		// refreshPostMetrics updates `like_count` on every tick, but
+		// never touches the baseline — so community lift = current − baseline.
+		like_count: baselineLikeCount,
 		reply_count: 0,
 		repost_count: 0,
+		like_count_at_submission: baselineLikeCount,
 		indexed_at: createdAt
 	});
 	return inserted;

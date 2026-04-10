@@ -34,6 +34,14 @@ export type PostRow = {
 	like_count: number;
 	reply_count: number;
 	repost_count: number;
+	/**
+	 * Snapshot of `like_count` captured at submission time. Used by the
+	 * Hot sort to compute community lift = `like_count - baseline`, so
+	 * a viral pre-submission post doesn't rocket to the top of Hot the
+	 * moment it's forwarded to the community. Nullable only for rows
+	 * created during the narrow window between migration + code deploy.
+	 */
+	like_count_at_submission: number | null;
 	indexed_at: string;
 	last_refreshed_at: string;
 };
@@ -173,7 +181,7 @@ export async function insertPost(db: D1Database, row: Omit<PostRow, 'last_refres
 	try {
 		await db
 			.prepare(
-				'INSERT INTO posts (uri, cid, community_did, title, quoted_post_uri, quoted_post_cid, author_did, like_count, reply_count, repost_count, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+				'INSERT INTO posts (uri, cid, community_did, title, quoted_post_uri, quoted_post_cid, author_did, like_count, reply_count, repost_count, like_count_at_submission, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 			)
 			.bind(
 				row.uri,
@@ -186,6 +194,7 @@ export async function insertPost(db: D1Database, row: Omit<PostRow, 'last_refres
 				row.like_count,
 				row.reply_count,
 				row.repost_count,
+				row.like_count_at_submission,
 				row.indexed_at
 			)
 			.run();
@@ -216,11 +225,20 @@ export type PostSort = 'hot' | 'new' | 'top-day' | 'top-week' | 'top-month';
 function sortClauses(sort: PostSort): { where: string; order: string } {
 	switch (sort) {
 		case 'hot':
-			// Hacker News-style ranking: (likes + 1) / (age_hours + 2)^1.8.
-			// Scoped to the last 7 days so stale viral posts don't pin the top.
+			// Community lift ranking:
+			//   lift = current_likes − baseline_at_submission   (never < 0)
+			//   score = log10(lift + 1) / (submission_age_hours + 2)^1.8
+			// The `log10` compresses extreme engagement so a post with
+			// thousands of new likes doesn't completely drown out smaller
+			// genuine community discussions. The HN-style denominator
+			// decays with submission age. Scoped to the last 7 days so
+			// stale submissions fall out of Hot entirely.
+			// COALESCE handles rows in the narrow window between migration
+			// and code deploy, and backfilled old rows — both degrade to
+			// "baseline = current" = zero lift, ranking them at the bottom.
 			return {
 				where: `AND p.indexed_at > datetime('now', '-7 days')`,
-				order: `((p.like_count + 1.0) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 1.8)) DESC, p.indexed_at DESC`
+				order: `(log10(MAX(p.like_count - COALESCE(p.like_count_at_submission, p.like_count), 0) + 1.0) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 1.8)) DESC, p.indexed_at DESC`
 			};
 		case 'top-day':
 			return {

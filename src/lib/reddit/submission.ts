@@ -85,17 +85,20 @@ function stripRange(text: string, start: number, length: number): string {
 }
 
 /**
- * Fetch the CID of a post at a given AT URI. Required to build a valid
- * app.bsky.embed.record (which requires both uri and cid).
+ * Fetch the CID + current like count of a post at a given AT URI. The
+ * CID is required to build a valid `app.bsky.embed.record`. The like
+ * count is stored as the baseline at submission time so the Hot sort
+ * can compute community lift = current_likes − baseline.
  */
-export async function getPostCid(
+export async function getPostMeta(
 	client: Client,
 	uri: ResourceUri
-): Promise<string | null> {
+): Promise<{ cid: string; likeCount: number } | null> {
 	// Pull 1 post from the public appview — faster than getRecord to the PDS.
 	const res = await client.get('app.bsky.feed.getPosts', {
 		params: { uris: [uri] }
 	});
 	if (!res.ok || res.data.posts.length === 0) return null;
-	return res.data.posts[0].cid;
+	const post = res.data.posts[0];
+	return { cid: post.cid, likeCount: post.likeCount ?? 0 };
 }

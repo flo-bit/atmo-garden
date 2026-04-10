@@ -470,20 +470,29 @@ async function createSubmissionPost(
 	if (!quotedCid) return false;
 
 	const createdAt = new Date().toISOString();
+	const isRepost = submission.title.length === 0;
+
 	let result: { uri: string; cid: string };
 	try {
-		result = await client.createRecord('app.bsky.feed.post', {
-			$type: 'app.bsky.feed.post',
-			text: submission.title,
-			createdAt,
-			embed: {
-				$type: 'app.bsky.embed.record',
-				record: {
-					uri: submission.postUri,
-					cid: quotedCid
+		if (isRepost) {
+			// No title → straight repost. The community account boosts the
+			// original post, no commentary added.
+			result = await client.createRecord('app.bsky.feed.repost', {
+				$type: 'app.bsky.feed.repost',
+				subject: { uri: submission.postUri, cid: quotedCid },
+				createdAt
+			});
+		} else {
+			result = await client.createRecord('app.bsky.feed.post', {
+				$type: 'app.bsky.feed.post',
+				text: submission.title,
+				createdAt,
+				embed: {
+					$type: 'app.bsky.embed.record',
+					record: { uri: submission.postUri, cid: quotedCid }
 				}
-			}
-		});
+			});
+		}
 	} catch (e) {
 		console.error('[createSubmissionPost] rookery createRecord failed', e);
 		return false;
@@ -548,7 +557,6 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 export async function runCronTick(env: App.Platform['env']): Promise<{
 	communitiesChecked: number;
 	postsCreated: number;
-	postsRefreshed: number;
 	errors: string[];
 }> {
 	const db = env.DB;
@@ -592,15 +600,9 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		}
 	}
 
-	const postsRefreshed = await refreshPostMetrics(db).catch((e) => {
-		errors.push(`refresh: ${String(e)}`);
-		return 0;
-	});
-
 	return {
 		communitiesChecked: communities.length,
 		postsCreated,
-		postsRefreshed,
 		errors
 	};
 }

@@ -2,7 +2,7 @@
 	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { goto } from '$app/navigation';
 	import { Avatar } from '@foxui/core';
-	import { Heart, MessageCircle, Repeat2 } from '@lucide/svelte';
+	import { Heart, MessageCircle, Repeat2, Repeat } from '@lucide/svelte';
 	import { wireEmbedClicks } from '$lib/components/embed';
 	import { blueskyPostToPostData } from '$lib/components';
 	import { Post } from '$lib/components';
@@ -11,9 +11,21 @@
 	import { loginModalState } from '$lib/LoginModal.svelte';
 	import { isAccentColor } from './accent-colors';
 	import type { PostRow, PostWithCommunity } from './db';
-	type PostView = Record<string, unknown> & {
+
+	// `getQuotedPosts` uses the authenticated appview client, so this view
+	// already includes per-viewer state like `viewer.like` plus the live
+	// like/reply/repost counts. We treat the QUOTED post as the canonical
+	// thing users interact with — the community's wrapping quote post is
+	// just a forwarder.
+	type PostView = {
 		uri: string;
+		cid: string;
 		author: { handle: string };
+		likeCount?: number;
+		replyCount?: number;
+		repostCount?: number;
+		viewer?: { like?: string; repost?: string };
+		[key: string]: unknown;
 	};
 
 	type CardRow = PostRow | PostWithCommunity;
@@ -25,15 +37,12 @@
 		/** Tailwind color label, e.g. "pink". Only needed when `row` is a bare
 		  * PostRow (no community_accent_color). On a PostWithCommunity the row
 		  * already carries the cached accent color. */
-		accentColor: accentColorProp,
-		/** Initial viewer like URI (from getPostsViewerState) — null = not liked. */
-		likeUri: initialLikeUri = null
+		accentColor: accentColorProp
 	}: {
 		row: CardRow;
 		quoted?: PostView | null;
 		showCommunity?: boolean;
 		accentColor?: string | null;
-		likeUri?: string | null;
 	} = $props();
 
 	const communityHandle = $derived(
@@ -82,19 +91,22 @@
 		return `${Math.floor(s / 86400)}d`;
 	}
 
-	// Optimistic like state. `likeUri` comes in from the parent (seeded by
-	// getPostsViewerState); we also track an optimistic delta on like_count
-	// so the visible number flips immediately on click.
+	// All counts + viewer state come straight from the quoted PostView.
+	// We track optimistic state locally so the heart flips instantly on
+	// click without waiting for a server roundtrip.
 	let likeUri = $state<string | null>(null);
 	let likeDelta = $state(0);
 	let likeBusy = $state(false);
 	const isLiked = $derived(likeUri !== null);
-	const displayLikeCount = $derived(row.like_count + likeDelta);
+	const baseLikeCount = $derived(quoted?.likeCount ?? 0);
+	const displayLikeCount = $derived(baseLikeCount + likeDelta);
+	const replyCount = $derived(quoted?.replyCount ?? 0);
+	const repostCount = $derived(quoted?.repostCount ?? 0);
 
 	$effect(() => {
-		// Reset optimistic state when the parent swaps in fresh viewer data.
-		// Reading initialLikeUri inside the effect makes it reactive.
-		likeUri = initialLikeUri;
+		// Re-seed optimistic state whenever the parent swaps in a fresh
+		// PostView. Reading inside the effect keeps it reactive.
+		likeUri = quoted?.viewer?.like ?? null;
 		likeDelta = 0;
 	});
 
@@ -105,7 +117,7 @@
 			loginModalState.open = true;
 			return;
 		}
-		if (likeBusy) return;
+		if (likeBusy || !quoted) return;
 		likeBusy = true;
 		const wasLiked = isLiked;
 		// Optimistic flip.
@@ -123,7 +135,7 @@
 		} else {
 			likeDelta = 1;
 			try {
-				const result = await likePost({ uri: row.uri, cid: row.cid });
+				const result = await likePost({ uri: quoted.uri, cid: quoted.cid });
 				likeUri = result.uri;
 			} catch (err) {
 				console.error('[RedditPostCard] like failed', err);
@@ -153,10 +165,17 @@
 		</div>
 	{/if}
 
-	<h2 class="mb-2 mt-1 text-lg font-semibold leading-tight">{row.title}</h2>
+	{#if row.title}
+		<h2 class="mb-2 mt-1 text-lg font-semibold leading-tight">{row.title}</h2>
+	{:else}
+		<div class="text-base-500 dark:text-base-400 mt-1 mb-2 flex items-center gap-1 text-xs">
+			<Repeat size={12} />
+			<span>reposted</span>
+		</div>
+	{/if}
 
 	{#if quoted && quotedPostData}
-		<div class="border-base-300 dark:border-base-600/30 bg-base-500/10 dark:bg-black/30 mb-2 rounded-2xl border p-3">
+		<div class="border-base-300 dark:border-base-600/30 bg-base-500/10 dark:bg-black/30 rounded-2xl border p-3">
 			<Post
 				data={quotedPostData}
 				embeds={quotedEmbeds}
@@ -165,35 +184,35 @@
 				handleHref={(handle) => `/profile/${handle}`}
 				onclickhandle={(handle) => goto(`/profile/${handle}`)}
 			/>
+
+			<div class="mt-4 flex items-center gap-4 text-xs text-base-500 dark:text-base-400">
+				<button
+					type="button"
+					onclick={onLikeClick}
+					disabled={likeBusy}
+					class="hover:text-accent-500 flex cursor-pointer items-center gap-1 transition-colors {isLiked ? 'text-accent-500' : ''}"
+					aria-label={isLiked ? 'Unlike' : 'Like'}
+				>
+					<Heart size={14} fill={isLiked ? 'currentColor' : 'none'} />
+					{displayLikeCount}
+				</button>
+				<span class="flex items-center gap-1">
+					<MessageCircle size={14} /> {replyCount}
+				</span>
+				<span class="flex items-center gap-1">
+					<Repeat2 size={14} /> {repostCount}
+				</span>
+			</div>
 		</div>
 	{:else if quoted === null}
-		<div class="text-base-500 dark:text-base-400 mb-2 text-xs italic">
+		<div class="text-base-500 dark:text-base-400 text-xs italic">
 			(quoted post unavailable)
 		</div>
 	{:else}
-		<div class="border-base-300 dark:border-base-700 bg-base-200/50 dark:bg-base-800/50 mb-2 animate-pulse rounded-2xl border p-3">
+		<div class="border-base-300 dark:border-base-700 bg-base-200/50 dark:bg-base-800/50 animate-pulse rounded-2xl border p-3">
 			<div class="h-3 w-32 rounded bg-base-300 dark:bg-base-700"></div>
 			<div class="mt-2 h-3 w-full rounded bg-base-300 dark:bg-base-700"></div>
 			<div class="mt-1 h-3 w-3/4 rounded bg-base-300 dark:bg-base-700"></div>
 		</div>
 	{/if}
-
-	<div class="flex items-center gap-4 text-xs text-base-500 dark:text-base-400">
-		<button
-			type="button"
-			onclick={onLikeClick}
-			disabled={likeBusy}
-			class="hover:text-accent-500 flex cursor-pointer items-center gap-1 transition-colors {isLiked ? 'text-accent-500' : ''}"
-			aria-label={isLiked ? 'Unlike' : 'Like'}
-		>
-			<Heart size={14} fill={isLiked ? 'currentColor' : 'none'} />
-			{displayLikeCount}
-		</button>
-		<span class="flex items-center gap-1">
-			<MessageCircle size={14} /> {row.reply_count}
-		</span>
-		<span class="flex items-center gap-1">
-			<Repeat2 size={14} /> {row.repost_count}
-		</span>
-	</div>
 </article>

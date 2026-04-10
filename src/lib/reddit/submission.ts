@@ -31,6 +31,8 @@ export type DmInput = {
  * (`app.bsky.embed.record`).
  *
  * Returns null if the message doesn't reference a recognizable Bluesky post.
+ * Empty title is allowed — the bot turns title-less submissions into reposts
+ * instead of quote posts.
  */
 export async function parseSubmission(msg: DmInput): Promise<ParsedSubmission | null> {
 	const text = msg.text ?? '';
@@ -39,9 +41,7 @@ export async function parseSubmission(msg: DmInput): Promise<ParsedSubmission | 
 	// flow, which attaches an app.bsky.embed.record to the message.
 	const embedUri = msg.embed?.record?.uri;
 	if (embedUri && /^at:\/\/did:[^/]+\/app\.bsky\.feed\.post\//.test(embedUri)) {
-		const title = text.trim();
-		if (!title) return null;
-		return { title, postUri: embedUri as ResourceUri };
+		return { title: text.trim(), postUri: embedUri as ResourceUri };
 	}
 
 	if (!text) return null;
@@ -51,7 +51,6 @@ export async function parseSubmission(msg: DmInput): Promise<ParsedSubmission | 
 	if (atMatch) {
 		const uri = atMatch[0] as ResourceUri;
 		const title = stripRange(text, atMatch.index!, atMatch[0].length);
-		if (!title) return null;
 		return { title, postUri: uri };
 	}
 
@@ -75,7 +74,6 @@ export async function parseSubmission(msg: DmInput): Promise<ParsedSubmission | 
 
 	const postUri = `at://${did}/app.bsky.feed.post/${rkey}` as ResourceUri;
 	const title = stripRange(text, urlMatch.index!, urlMatch[0].length);
-	if (!title) return null;
 
 	return { title, postUri };
 }

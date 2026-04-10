@@ -3,30 +3,20 @@
 	import { Loader2 } from '@lucide/svelte';
 	import { getHomeFeed } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
-	import { getPostsViewerState } from '$lib/atproto/server/feed.remote';
-	import { user } from '$lib/atproto/auth.svelte';
 	import RedditPostCard from '$lib/reddit/RedditPostCard.svelte';
 	import type { PostWithCommunity } from '$lib/reddit/db';
 
 	let loading = $state(true);
 	let feed = $state<PostWithCommunity[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
-	let viewerStates = $state<Record<string, { likeUri: string | null }>>({});
 
 	onMount(async () => {
 		try {
 			const f = await getHomeFeed({ limit: 50 });
 			feed = f;
 			if (f.length > 0) {
-				const uris = f.map((p) => p.uri);
-				const [quotedRes, viewerRes] = await Promise.all([
-					getQuotedPosts({ uris: f.map((p) => p.quoted_post_uri) }),
-					user.did
-						? getPostsViewerState({ uris })
-						: Promise.resolve({ states: {} })
-				]);
-				quoted = quotedRes.posts;
-				viewerStates = viewerRes.states;
+				const res = await getQuotedPosts({ uris: f.map((p) => p.quoted_post_uri) });
+				quoted = res.posts;
 			}
 		} catch (e) {
 			console.error(e);
@@ -54,7 +44,6 @@
 					row={p}
 					quoted={(quoted[p.quoted_post_uri] ?? undefined) as never}
 					showCommunity
-					likeUri={viewerStates[p.uri]?.likeUri ?? null}
 				/>
 			{/each}
 		</div>

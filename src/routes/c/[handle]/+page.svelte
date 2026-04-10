@@ -5,12 +5,7 @@
 	import { Loader2, Check, UserPlus } from '@lucide/svelte';
 	import { getCommunity, getCommunityPosts } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
-	import {
-		followUser,
-		unfollowUser,
-		getProfile,
-		getPostsViewerState
-	} from '$lib/atproto/server/feed.remote';
+	import { followUser, unfollowUser, getProfile } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
 	import { loginModalState } from '$lib/LoginModal.svelte';
 	import RedditPostCard from '$lib/reddit/RedditPostCard.svelte';
@@ -23,7 +18,6 @@
 	let community = $state<CommunityInfo>(null);
 	let posts = $state<PostRow[]>([]);
 	let quoted = $state<Record<string, unknown>>({});
-	let viewerStates = $state<Record<string, { likeUri: string | null }>>({});
 
 	// Follow state — populated after the community loads, if the user is
 	// signed in. `followUri` is the AT-URI of the user's follow record
@@ -38,7 +32,6 @@
 		community = null;
 		posts = [];
 		quoted = {};
-		viewerStates = {};
 		followUri = null;
 		try {
 			const info = await getCommunity({ handle });
@@ -52,15 +45,8 @@
 			posts = rows;
 
 			if (rows.length > 0) {
-				const postUris = rows.map((r) => r.uri);
-				const [quotedRes, viewerRes] = await Promise.all([
-					getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) }),
-					user.did
-						? getPostsViewerState({ uris: postUris })
-						: Promise.resolve({ states: {} })
-				]);
-				quoted = quotedRes.posts;
-				viewerStates = viewerRes.states;
+				const res = await getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) });
+				quoted = res.posts;
 			}
 
 			// If the viewer is signed in, fetch viewer.following from the
@@ -175,7 +161,6 @@
 						row={p}
 						quoted={(quoted[p.quoted_post_uri] ?? undefined) as never}
 						accentColor={community.accentColor}
-						likeUri={viewerStates[p.uri]?.likeUri ?? null}
 					/>
 				{/each}
 			</div>

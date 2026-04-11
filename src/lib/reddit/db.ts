@@ -247,23 +247,43 @@ function sortClauses(sort: PostSort): { where: string; order: string } {
 	switch (sort) {
 		case 'hot':
 			// Community lift ranking:
-			//   lift = current_likes − baseline_at_submission   (never < 0)
-			//   score = sqrt(lift) / (submission_age_hours + 2)^1.8
-			// sqrt(...) compresses extreme engagement so a post with
-			// thousands of new likes doesn't completely drown out smaller
-			// genuine community discussions. Expressed as `pow(x, 0.5)`
-			// because D1's SQLite gates `log10` (not in the allowed fn
-			// list) but permits `pow`. No `+1` on the lift: we WANT
-			// zero-lift posts to score exactly 0 so they drop below
-			// anything with real community engagement. The HN-style
-			// denominator decays with submission age. Scoped to the last
-			// 7 days so stale submissions fall out of Hot entirely.
-			// COALESCE handles rows in the narrow window between migration
-			// and code deploy, and backfilled old rows — both degrade to
-			// "baseline = current" = zero lift, ranking them at the bottom.
+			//   lift  = current_likes − baseline_at_submission − 1   (clamped ≥ 0)
+			//   score = lift^0.25 / (age_hours + 2)^2.5
+			//
+			// Two things this formula is deliberately tuned for, after
+			// the previous `sqrt(lift) / (age+2)^1.8` version kept
+			// surfacing days-old viral posts at the top of Hot:
+			//
+			//   1. `pow(lift, 0.25)` — i.e. sqrt(sqrt(lift)) — is much
+			//      more aggressive compression than plain sqrt. It
+			//      collapses the gap between "10 new likes" and
+			//      "10,000 new likes" from 31× to ~5.6×, so a huge
+			//      raw lift can't steamroll a fresh post on raw size
+			//      alone. D1's SQLite gates `log10` (which would be
+			//      the textbook choice here) but `pow` is on the
+			//      allowed list, and sqrt-of-sqrt is close enough.
+			//
+			//   2. The `(age_hours + 2)^2.5` denominator decays
+			//      significantly faster than the HN-canonical 1.8. At
+			//      2.5, a 5h-old post with 10k lift scores ~0.077
+			//      while a 10-min-old post with 10 lift scores
+			//      ~0.250 — i.e. genuine "community just reacted
+			//      to this" pops above "random old bsky-viral".
+			//
+			// The `− 1` floor on lift ensures a single new like
+			// doesn't register (zero-engagement posts rank 0 and drop
+			// to the bottom instead of leading Hot during quiet
+			// periods). COALESCE still handles rows backfilled or
+			// created in the migration/deploy gap where
+			// `like_count_at_submission` is NULL — those degrade to
+			// lift = 0 − 1, clamped to 0.
+			//
+			// Scoped to the last 7 days: the steep decay already
+			// buries anything older but the explicit cutoff keeps
+			// the index scan tight for the global feed.
 			return {
 				where: `AND p.indexed_at > datetime('now', '-7 days')`,
-				order: `(pow(MAX(p.like_count - COALESCE(p.like_count_at_submission, p.like_count), 0), 0.5) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 1.8)) DESC, p.indexed_at DESC`
+				order: `(pow(MAX(p.like_count - COALESCE(p.like_count_at_submission, p.like_count) - 1, 0), 0.25) / pow((julianday('now') - julianday(p.indexed_at)) * 24.0 + 2.0, 2.5)) DESC, p.indexed_at DESC`
 			};
 		case 'top-day':
 			return {

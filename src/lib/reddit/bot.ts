@@ -20,8 +20,8 @@ import {
 	insertPost,
 	listCommunities,
 	saveJetstreamCursor,
+	updateCommunityMentionsSeenAt,
 	updateCommunityProfile,
-	updatePostMetrics,
 	type CommunityRow
 } from './db';
 import { getPostMeta, parseSubmission } from './submission';
@@ -106,6 +106,8 @@ function stripCommunityLink(desc: string | null | undefined): string | null {
 }
 const CHAT_SERVICE_DID = 'did:web:api.bsky.chat';
 const CHAT_SERVICE_BASE = 'https://api.bsky.chat/xrpc';
+const BSKY_APPVIEW_DID = 'did:web:api.bsky.app';
+const BSKY_APPVIEW_BASE = 'https://api.bsky.app/xrpc';
 const PROCESSED_REACTION = '✅';
 const REJECTED_REACTION = '🔒';
 
@@ -619,7 +621,12 @@ export async function registerCommunity(
 		avatar: avatarUrl,
 		description: cachedDescription,
 		accent_color: accentColor ?? DEFAULT_ACCENT_COLOR,
-		followers_count: followersCount
+		followers_count: followersCount,
+		// Leave NULL so the first cron tick primes the mentions cursor by
+		// calling updateSeen(now) — we don't want to retroactively repost
+		// anything that was mentioning the handle before the community
+		// existed (e.g. squatted names, testing, etc.).
+		last_mention_seen_at: null
 	});
 
 	// Add the new community to the public atmo.garden discovery list so it
@@ -760,6 +767,103 @@ async function sendMessage(
 	}).catch((e) => {
 		console.error('[sendMessage] failed', e);
 	});
+}
+
+// -------------------------------------------------------------------------
+// api.bsky.app calls via service-auth tokens
+// -------------------------------------------------------------------------
+
+/**
+ * Call an api.bsky.app XRPC method as the given community, using a rookery
+ * service-auth JWT scoped to the method. Mirrors `chatCall`, but for the
+ * public Bluesky appview (used for notifications — the mention-based
+ * submission flow lives on `app.bsky.notification.*`).
+ */
+async function appviewCall<T>(
+	client: WelcomeMatClient,
+	method: string,
+	init: { method?: 'GET' | 'POST'; query?: Record<string, string | string[]>; body?: unknown }
+): Promise<{ ok: boolean; status: number; data: T | { error: string; message?: string } }> {
+	const httpMethod = init.method ?? 'GET';
+	const token = await client.getServiceAuth(BSKY_APPVIEW_DID, method);
+
+	const url = new URL(`${BSKY_APPVIEW_BASE}/${method}`);
+	if (init.query) {
+		for (const [k, v] of Object.entries(init.query)) {
+			if (v === undefined) continue;
+			if (Array.isArray(v)) {
+				for (const item of v) url.searchParams.append(k, item);
+			} else {
+				url.searchParams.set(k, v);
+			}
+		}
+	}
+
+	const req: RequestInit = {
+		method: httpMethod,
+		headers: {
+			Authorization: `Bearer ${token}`,
+			...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {})
+		},
+		...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {})
+	};
+
+	const res = await fetch(url.toString(), req);
+	const text = await res.text();
+	let data: unknown;
+	try {
+		data = text ? JSON.parse(text) : {};
+	} catch {
+		data = { error: 'ParseError', message: text };
+	}
+	return { ok: res.ok, status: res.status, data: data as never };
+}
+
+type NotificationView = {
+	uri: string;
+	cid: string;
+	author: { did: string };
+	reason: string;
+	reasonSubject?: string;
+	record: unknown;
+	isRead: boolean;
+	indexedAt: string;
+};
+
+async function listMentionNotifications(
+	client: WelcomeMatClient
+): Promise<NotificationView[]> {
+	const res = await appviewCall<{ notifications: NotificationView[] }>(
+		client,
+		'app.bsky.notification.listNotifications',
+		{ method: 'GET', query: { limit: '100', reasons: ['mention'] } }
+	);
+	if (!res.ok) {
+		console.error(
+			'[listMentionNotifications] non-ok',
+			res.status,
+			(res.data as { error?: string; message?: string })?.message
+		);
+		return [];
+	}
+	return (res.data as { notifications: NotificationView[] }).notifications ?? [];
+}
+
+async function updateNotificationsSeen(
+	client: WelcomeMatClient,
+	seenAt: string
+): Promise<void> {
+	const res = await appviewCall(client, 'app.bsky.notification.updateSeen', {
+		method: 'POST',
+		body: { seenAt }
+	});
+	if (!res.ok) {
+		console.error(
+			'[updateNotificationsSeen] non-ok',
+			res.status,
+			(res.data as { error?: string; message?: string })?.message
+		);
+	}
 }
 
 // -------------------------------------------------------------------------
@@ -909,6 +1013,113 @@ export async function processCommunityDms(
 				await addReaction(client, convo.id, msg.id, PROCESSED_REACTION);
 			}
 		}
+	}
+
+	return created;
+}
+
+/**
+ * Poll mention notifications and turn each top-level mentioning post into a
+ * community repost. Users can submit a post to a community by tagging that
+ * community's handle in a brand-new bsky post — no DM required.
+ *
+ * Flow per community:
+ *   1. First run (`last_mention_seen_at IS NULL`): prime the cursor by
+ *      calling `updateSeen(now)` and stamping the column, then return.
+ *      This makes the feature ignore all pre-existing mentions so we don't
+ *      retroactively repost old tags from before the feature shipped.
+ *   2. Subsequent runs: `listNotifications({ reasons: ['mention'] })`,
+ *      drop anything whose `indexedAt <= cursor`, drop replies (posts with
+ *      a `reply` field), drop authors blocked by the community allowlist,
+ *      dedup via `hasSubmission`, then repost from the community account.
+ *   3. Advance the cursor to the latest `indexedAt` observed. Also call
+ *      `updateSeen` with that value so the notifications tab stays tidy.
+ *
+ * Mentions always become reposts (title = ""), not quote posts — the
+ * mentioning post is already the "commentary," so a quote would be
+ * redundant. Reuses `createSubmissionPost` so the same dedup row, metric
+ * seeding, and baseline-likes logic that the DM / web-submission paths get.
+ */
+export async function processCommunityMentions(
+	env: App.Platform['env'],
+	db: D1Database,
+	row: CommunityRow
+): Promise<number> {
+	const client = await loadClient(env, row);
+
+	// First-run initialization: skip pre-existing mentions.
+	if (row.last_mention_seen_at === null) {
+		const now = new Date().toISOString();
+		await updateNotificationsSeen(client, now);
+		await updateCommunityMentionsSeenAt(db, row.did, now);
+		return 0;
+	}
+
+	const cutoff = row.last_mention_seen_at;
+	const notifications = await listMentionNotifications(client);
+	if (notifications.length === 0) return 0;
+
+	// Fetch access config once per community, matching the DM path.
+	const config = await fetchCommunityConfig(row.pds, row.did);
+	const gated = config.whoCanSubmit === 'list' && !!config.listUri;
+	const allowedMembers = gated ? await fetchListMembers(config.listUri!) : null;
+
+	function isAllowed(senderDid: string): boolean {
+		if (!gated) return true;
+		if (config.creator && config.creator === senderDid) return true;
+		return allowedMembers?.has(senderDid) ?? false;
+	}
+
+	let created = 0;
+	// Track the max indexedAt we observed (not just the ones we processed)
+	// so notifications filtered out by reply/allowlist/dedup still advance
+	// the cursor and don't get re-scanned next tick.
+	let newCutoff = cutoff;
+
+	for (const notif of notifications) {
+		if (notif.indexedAt > newCutoff) newCutoff = notif.indexedAt;
+
+		if (notif.reason !== 'mention') continue;
+		if (notif.indexedAt <= cutoff) continue;
+
+		// Only top-level posts — skip replies.
+		const record = notif.record as { reply?: unknown } | null;
+		if (record && record.reply) continue;
+
+		// Must be an app.bsky.feed.post URI; notifications can point at other
+		// collections in theory, and createSubmissionPost assumes a post.
+		const postUri = notif.uri;
+		if (
+			typeof postUri !== 'string' ||
+			!/^at:\/\/did:[^/]+\/app\.bsky\.feed\.post\/[A-Za-z0-9]+$/.test(postUri)
+		) {
+			continue;
+		}
+
+		if (!isAllowed(notif.author.did)) continue;
+
+		// Dedup: someone may have already submitted this post via DM / web.
+		if (await hasSubmission(db, row.did, postUri)) continue;
+
+		const ok = await createSubmissionPost(
+			db,
+			client,
+			row,
+			// Empty title → repost, matching DMs-without-text semantics.
+			{ title: '', postUri: postUri as ResourceUri },
+			notif.author.did as Did
+		);
+		if (ok) created++;
+	}
+
+	// Persist the advanced cursor (if there was anything at all) and tell
+	// the appview our seen-marker so the community's notifications tab
+	// stays clean. Notifications that arrive after listNotifications
+	// returned will have `indexedAt > newCutoff` and be picked up next
+	// tick — the cursor intentionally only advances to what we observed.
+	if (newCutoff !== cutoff) {
+		await updateNotificationsSeen(client, newCutoff);
+		await updateCommunityMentionsSeenAt(db, row.did, newCutoff);
 	}
 
 	return created;
@@ -1225,6 +1436,22 @@ export async function drainSubmissionJetstream(
  * live counts. Powers the "top" sort — the numbers the UI shows and the
  * numbers we rank by are the original Bluesky post's engagement, not the
  * community's quote/repost record.
+ *
+ * Shape of the tick:
+ *   1. Pull up to 100 due rows from D1, round-robined across communities.
+ *   2. Chunk into batches of 25 (bsky `getPosts` max) and fire them
+ *      concurrently against the public appview.
+ *   3. Build a single D1 batch of UPDATE statements and flush in one
+ *      round-trip — far cheaper than the previous per-row await loop.
+ *
+ * Dead-post backoff: if a quoted post is missing from the appview
+ * response (deleted, taken down, hidden), we still stamp
+ * `last_refreshed_at` on the row. Without that, the row would fail the
+ * `get → undefined` branch every tick and keep re-hitting the appview
+ * forever. Stamping lets it back off into its normal age bucket.
+ *
+ * Transient failures (network error, non-ok response for the whole
+ * batch) leave the rows alone so the next tick retries them.
  */
 export async function refreshPostMetrics(db: D1Database): Promise<number> {
 	const due = await getPostsDueForRefresh(db, 100);
@@ -1234,41 +1461,98 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 		handler: simpleFetchHandler({ service: PUBLIC_APPVIEW })
 	});
 
-	let refreshed = 0;
+	// Split into getPosts-sized chunks (max 25 URIs per call).
+	const chunks: (typeof due)[] = [];
 	for (let i = 0; i < due.length; i += 25) {
-		const batch = due.slice(i, i + 25);
-		// Fetch metrics for the set of quoted-post URIs in this batch.
-		// Multiple rows can share the same quoted_post_uri (different
-		// communities quoting the same post), so we dedupe the fetch set
-		// and then fan out the update to every matching row.
-		const quotedUris = Array.from(
-			new Set(batch.map((p) => p.quoted_post_uri))
-		) as ResourceUri[];
-		try {
-			const res = await appview.get('app.bsky.feed.getPosts', {
-				params: { uris: quotedUris }
-			});
-			if (!res.ok) continue;
-			const metricsByQuoted = new Map<
-				string,
-				{ like_count: number; reply_count: number; repost_count: number }
-			>();
-			for (const post of res.data.posts) {
-				metricsByQuoted.set(post.uri, {
-					like_count: post.likeCount ?? 0,
-					reply_count: post.replyCount ?? 0,
-					repost_count: post.repostCount ?? 0
+		chunks.push(due.slice(i, i + 25));
+	}
+
+	type Metrics = { like_count: number; reply_count: number; repost_count: number };
+	type ChunkResult = {
+		batch: typeof due;
+		metricsByQuoted: Map<string, Metrics> | null;
+	};
+
+	// Fire every chunk in parallel. A chunk resolving with
+	// `metricsByQuoted: null` signals a transient failure — we skip its
+	// rows without advancing `last_refreshed_at` so they retry next tick.
+	const chunkResults: ChunkResult[] = await Promise.all(
+		chunks.map(async (batch) => {
+			const quotedUris = Array.from(
+				new Set(batch.map((p) => p.quoted_post_uri))
+			) as ResourceUri[];
+			try {
+				const res = await appview.get('app.bsky.feed.getPosts', {
+					params: { uris: quotedUris }
 				});
+				if (!res.ok) {
+					console.error(
+						'[refreshPostMetrics] non-ok getPosts',
+						quotedUris.length,
+						'uris'
+					);
+					return { batch, metricsByQuoted: null };
+				}
+				const metricsByQuoted = new Map<string, Metrics>();
+				for (const post of res.data.posts) {
+					metricsByQuoted.set(post.uri, {
+						like_count: post.likeCount ?? 0,
+						reply_count: post.replyCount ?? 0,
+						repost_count: post.repostCount ?? 0
+					});
+				}
+				return { batch, metricsByQuoted };
+			} catch (e) {
+				console.error('[refreshPostMetrics] batch fetch failed', e);
+				return { batch, metricsByQuoted: null };
 			}
-			for (const row of batch) {
-				const m = metricsByQuoted.get(row.quoted_post_uri);
-				if (!m) continue;
-				await updatePostMetrics(db, row.uri, m);
+		})
+	);
+
+	// Build one big D1 batch of UPDATEs — both the "we got metrics"
+	// path and the "quoted post is gone, back off" path. D1 processes
+	// all statements in a single round-trip, so 100 updates cost roughly
+	// the same as 1.
+	const updateWithMetrics = db.prepare(
+		'UPDATE posts SET like_count = ?, reply_count = ?, repost_count = ?, last_refreshed_at = datetime("now") WHERE uri = ?'
+	);
+	const touchOnly = db.prepare(
+		'UPDATE posts SET last_refreshed_at = datetime("now") WHERE uri = ?'
+	);
+
+	const statements: D1PreparedStatement[] = [];
+	let refreshed = 0;
+	let deadBackoff = 0;
+
+	for (const { batch, metricsByQuoted } of chunkResults) {
+		if (!metricsByQuoted) continue; // transient failure — retry next tick
+		for (const row of batch) {
+			const m = metricsByQuoted.get(row.quoted_post_uri);
+			if (m) {
+				statements.push(
+					updateWithMetrics.bind(m.like_count, m.reply_count, m.repost_count, row.uri)
+				);
 				refreshed++;
+			} else {
+				statements.push(touchOnly.bind(row.uri));
+				deadBackoff++;
 			}
-		} catch (e) {
-			console.error('[refreshPostMetrics] batch failed', e);
 		}
+	}
+
+	if (statements.length > 0) {
+		try {
+			await db.batch(statements);
+		} catch (e) {
+			console.error('[refreshPostMetrics] batch update failed', e);
+			return 0;
+		}
+	}
+
+	if (deadBackoff > 0) {
+		console.log(
+			`[refreshPostMetrics] ${refreshed} refreshed, ${deadBackoff} dead posts stamped for backoff`
+		);
 	}
 
 	return refreshed;
@@ -1281,30 +1565,70 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 export async function runCronTick(env: App.Platform['env']): Promise<{
 	communitiesChecked: number;
 	postsCreated: number;
+	mentionsCreated: number;
 	webSubmissionsCreated: number;
 	jetstreamEvents: number;
 	postsRefreshed: number;
 	errors: string[];
 }> {
+	console.log('[cron] runCronTick start');
 	const db = env.DB;
 	if (!db) throw new Error('DB binding missing');
 
 	const errors: string[] = [];
 	const communities = await listCommunities(db);
+	console.log(`[cron] listCommunities → ${communities.length} rows`);
 
 	let postsCreated = 0;
-	for (const row of communities) {
+	let mentionsCreated = 0;
+
+	// Process communities in parallel batches. Each community's DM poll,
+	// mention poll and profile cache refresh must stay ordered within that
+	// community (they share a rookery client + touch overlapping D1 rows),
+	// but different communities have disjoint accounts and state, so the
+	// batch-level fan-out is safe. Cap concurrency so we don't stampede
+	// rookery / api.bsky.chat / api.bsky.app with 40+ simultaneous clients.
+	const COMMUNITY_CONCURRENCY = 10;
+	async function runCommunity(row: CommunityRow): Promise<{
+		posts: number;
+		mentions: number;
+	}> {
+		let posts = 0;
+		let mentions = 0;
+
+		console.log(`[cron] ${row.handle} — DMs`);
 		try {
-			postsCreated += await processCommunityDms(env, db, row);
+			posts = await processCommunityDms(env, db, row);
 		} catch (e) {
 			console.error(`[cron] community ${row.handle} failed:`, e);
 			errors.push(`${row.handle}: ${String(e)}`);
+		}
+
+		console.log(
+			`[cron] ${row.handle} — mentions (cursor=${row.last_mention_seen_at ?? 'NULL'})`
+		);
+		try {
+			mentions = await processCommunityMentions(env, db, row);
+		} catch (e) {
+			console.error(`[cron] community ${row.handle} mentions failed:`, e);
+			errors.push(`${row.handle} mentions: ${String(e)}`);
 		}
 
 		// Best-effort: refresh cached profile metadata (avatar, display name,
 		// desc, follower count) from the appview + accent color from the
 		// community's `garden.atmo.community/self` record.
 		await refreshCommunityCache(env, row);
+
+		return { posts, mentions };
+	}
+
+	for (let i = 0; i < communities.length; i += COMMUNITY_CONCURRENCY) {
+		const batch = communities.slice(i, i + COMMUNITY_CONCURRENCY);
+		const results = await Promise.all(batch.map(runCommunity));
+		for (const r of results) {
+			postsCreated += r.posts;
+			mentionsCreated += r.mentions;
+		}
 	}
 
 	// Drain the jetstream for `garden.atmo.submission` records created via the
@@ -1324,6 +1648,7 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	return {
 		communitiesChecked: communities.length,
 		postsCreated,
+		mentionsCreated,
 		webSubmissionsCreated: jetstreamResult.created,
 		jetstreamEvents: jetstreamResult.events,
 		postsRefreshed,

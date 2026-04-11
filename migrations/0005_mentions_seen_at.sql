@@ -1,0 +1,12 @@
+-- Per-community cursor for the mention-based submission flow. When a user
+-- mentions a community handle in a top-level post, the cron polls
+-- `app.bsky.notification.listNotifications` and reposts the mentioning post
+-- from the community account.
+--
+-- The column holds an ISO-8601 datetime. NULL means we've never initialized
+-- this community's mention cursor — the first cron tick calls
+-- `app.bsky.notification.updateSeen(now)` so pre-existing mentions don't get
+-- retroactively reposted, then stamps this column. Subsequent ticks only
+-- process notifications whose `indexedAt` is strictly greater than this
+-- value, and advance the column to the latest notification observed.
+ALTER TABLE communities ADD COLUMN last_mention_seen_at TEXT;

@@ -106,7 +106,17 @@
 </script>
 
 <div class="mx-auto w-full max-w-xl px-4 py-6">
-	<h1 class="mb-4 text-2xl font-bold">atmo.garden</h1>
+	<div class="mb-4">
+		<h1 class="text-2xl font-bold">atmo.garden</h1>
+		<div class="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
+			<span class="text-accent-700 dark:text-accent-300 bg-accent-100 dark:bg-accent-900/40 rounded-full px-2 py-0.5 font-medium">
+				communities on bluesky
+			</span>
+			<span class="text-base-700 dark:text-base-300 bg-base-200 dark:bg-base-800 rounded-full px-2 py-0.5 font-medium">
+				experimental
+			</span>
+		</div>
+	</div>
 
 	<SortTabs bind:sort onchange={loadFeed} class="mb-3" />
 

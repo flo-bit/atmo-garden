@@ -8,6 +8,7 @@ import { json, error } from '@sveltejs/kit';
 import { runCronTick } from '$lib/reddit/bot';
 
 async function handle(request: Request, platform: App.Platform | undefined) {
+	console.log('[cron] handler entry', request.method, request.url);
 	const env = platform?.env;
 	if (!env) error(500, 'Platform env unavailable');
 

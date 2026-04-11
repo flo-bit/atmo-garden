@@ -20,6 +20,13 @@ export type CommunityRow = {
 	accent_color: string | null;
 	/** Cached followersCount from `app.bsky.actor.getProfile`. */
 	followers_count: number | null;
+	/**
+	 * Cursor for the mention-based submission flow (ISO-8601 datetime).
+	 * NULL → never initialized; the next cron tick primes
+	 * `app.bsky.notification.updateSeen(now)` and stamps this column so
+	 * pre-existing mentions aren't retroactively reposted.
+	 */
+	last_mention_seen_at: string | null;
 	created_at: string;
 };
 
@@ -60,7 +67,7 @@ export async function listCommunities(db: D1Database): Promise<CommunityListRow[
 	// still appear (COALESCE to 0) without needing a second roundtrip.
 	const res = await db
 		.prepare(
-			`SELECT c.did, c.handle, c.pds, c.secret_key_ciphertext, c.secret_key_iv, c.public_jwk_json, c.thumbprint, c.display_name, c.avatar, c.description, c.accent_color, c.followers_count, c.created_at,
+			`SELECT c.did, c.handle, c.pds, c.secret_key_ciphertext, c.secret_key_iv, c.public_jwk_json, c.thumbprint, c.display_name, c.avatar, c.description, c.accent_color, c.followers_count, c.last_mention_seen_at, c.created_at,
 			        COALESCE(pc.n, 0) AS post_count
 			 FROM communities c
 			 LEFT JOIN (SELECT community_did, COUNT(*) AS n FROM posts GROUP BY community_did) pc
@@ -77,7 +84,7 @@ export async function getCommunityByHandle(
 ): Promise<CommunityRow | null> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, followers_count, created_at FROM communities WHERE handle = ?'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, followers_count, last_mention_seen_at, created_at FROM communities WHERE handle = ?'
 		)
 		.bind(handle)
 		.first<CommunityRow>();
@@ -90,7 +97,7 @@ export async function getCommunityByDid(
 ): Promise<CommunityRow | null> {
 	const res = await db
 		.prepare(
-			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, followers_count, created_at FROM communities WHERE did = ?'
+			'SELECT did, handle, pds, secret_key_ciphertext, secret_key_iv, public_jwk_json, thumbprint, display_name, avatar, description, accent_color, followers_count, last_mention_seen_at, created_at FROM communities WHERE did = ?'
 		)
 		.bind(did)
 		.first<CommunityRow>();
@@ -161,6 +168,22 @@ export async function updateCommunityProfile(
 }
 
 /**
+ * Advance the mention-notifications cursor. The cron tick passes the
+ * latest `indexedAt` it observed (or `now` on first-run initialization);
+ * future ticks only process mentions strictly greater than this value.
+ */
+export async function updateCommunityMentionsSeenAt(
+	db: D1Database,
+	did: string,
+	seenAt: string
+): Promise<void> {
+	await db
+		.prepare('UPDATE communities SET last_mention_seen_at = ? WHERE did = ?')
+		.bind(seenAt, did)
+		.run();
+}
+
+/**
  * Returns true if the community already has a submission post quoting the
  * given URI. Used to dedup before creating the Bluesky record so we never
  * double-post.
@@ -204,19 +227,6 @@ export async function insertPost(db: D1Database, row: Omit<PostRow, 'last_refres
 		if (String(e).includes('UNIQUE')) return false;
 		throw e;
 	}
-}
-
-export async function updatePostMetrics(
-	db: D1Database,
-	uri: string,
-	metrics: { like_count: number; reply_count: number; repost_count: number }
-): Promise<void> {
-	await db
-		.prepare(
-			'UPDATE posts SET like_count = ?, reply_count = ?, repost_count = ?, last_refreshed_at = datetime("now") WHERE uri = ?'
-		)
-		.bind(metrics.like_count, metrics.reply_count, metrics.repost_count, uri)
-		.run();
 }
 
 export type PostSort = 'hot' | 'new' | 'top-day' | 'top-week' | 'top-month';
@@ -384,21 +394,39 @@ export async function saveJetstreamCursor(
 // metrics on the quoted post and writes them back to the row keyed by
 // `uri` — so `posts.like_count` reflects the ORIGINAL post's popularity,
 // which is what the UI and the "top" sort need.
+//
+// Rows are round-robined across communities using a ROW_NUMBER() window
+// partitioned by community_did. Sorting by the partition rank first
+// (then by last_refreshed_at within rank) means the tick picks each
+// community's most-stale post before any community gets a second slot,
+// which stops a single high-volume community from starving smaller ones
+// out of the global LIMIT budget.
 export async function getPostsDueForRefresh(
 	db: D1Database,
 	limit = 100
 ): Promise<{ uri: string; quoted_post_uri: string }[]> {
 	const res = await db
 		.prepare(
-			`SELECT uri, quoted_post_uri FROM posts
-			 WHERE
-				 (julianday('now') - julianday(indexed_at)) * 24 < 1
-				 OR ((julianday('now') - julianday(indexed_at)) * 24 < 12 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 5)
-				 OR ((julianday('now') - julianday(indexed_at)) * 24 < 24 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 10)
-				 OR ((julianday('now') - julianday(indexed_at)) < 7 AND (julianday('now') - julianday(last_refreshed_at)) * 24 >= 1)
-				 OR ((julianday('now') - julianday(indexed_at)) >= 7 AND (julianday('now') - julianday(last_refreshed_at)) >= 1)
-			 ORDER BY last_refreshed_at ASC
-			 LIMIT ?`
+			`WITH due AS (
+				SELECT
+					uri,
+					quoted_post_uri,
+					last_refreshed_at,
+					ROW_NUMBER() OVER (
+						PARTITION BY community_did
+						ORDER BY last_refreshed_at ASC
+					) AS rank_in_community
+				FROM posts
+				WHERE
+					(julianday('now') - julianday(indexed_at)) * 24 < 1
+					OR ((julianday('now') - julianday(indexed_at)) * 24 < 12 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 5)
+					OR ((julianday('now') - julianday(indexed_at)) * 24 < 24 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 10)
+					OR ((julianday('now') - julianday(indexed_at)) < 7 AND (julianday('now') - julianday(last_refreshed_at)) * 24 >= 1)
+					OR ((julianday('now') - julianday(indexed_at)) >= 7 AND (julianday('now') - julianday(last_refreshed_at)) >= 1)
+			)
+			SELECT uri, quoted_post_uri FROM due
+			ORDER BY rank_in_community ASC, last_refreshed_at ASC
+			LIMIT ?`
 		)
 		.bind(limit)
 		.all<{ uri: string; quoted_post_uri: string }>();

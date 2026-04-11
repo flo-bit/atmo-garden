@@ -48,7 +48,9 @@ const MAX_LIMIT = 100;
 /** Map a known feed rkey → the `PostSort` we drive `getCombinedFeed` with. */
 const FEED_RKEY_TO_SORT: Record<string, PostSort> = {
 	'all-hot': 'hot',
-	'top-day': 'top-day'
+	'all-new': 'new',
+	'top-day': 'top-day',
+	'top-week': 'top-week'
 };
 
 type SkeletonFeedPost = {

@@ -69,6 +69,7 @@ type FeedGeneratorSpec = {
 // 24-grapheme / 240-byte cap on displayName. "atmo.garden Top of the
 // Day" is 26 graphemes and gets rejected — "atmo.garden Top Today" (21)
 // is the shortest phrasing that still reads naturally and stays under.
+// Keep each displayName ≤ 24 graphemes when adding new feeds.
 const FEEDS: FeedGeneratorSpec[] = [
 	{
 		rkey: 'all-hot',
@@ -77,10 +78,22 @@ const FEEDS: FeedGeneratorSpec[] = [
 			'The hottest submissions across every atmo.garden community — ranked by how fast each post is picking up likes right now. Browse + submit at https://atmo.garden.'
 	},
 	{
+		rkey: 'all-new',
+		displayName: 'atmo.garden New',
+		description:
+			'The newest submissions across every atmo.garden community — a live firehose of everything freshly submitted. Browse + submit at https://atmo.garden.'
+	},
+	{
 		rkey: 'top-day',
 		displayName: 'atmo.garden Top Today',
 		description:
 			'The most-liked submissions from every atmo.garden community over the last 24 hours. Browse + submit at https://atmo.garden.'
+	},
+	{
+		rkey: 'top-week',
+		displayName: 'atmo.garden Top Week',
+		description:
+			'The most-liked submissions from every atmo.garden community over the last 7 days. Browse + submit at https://atmo.garden.'
 	}
 ];
 

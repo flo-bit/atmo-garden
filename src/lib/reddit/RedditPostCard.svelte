@@ -29,6 +29,110 @@
 		[key: string]: unknown;
 	};
 
+	/**
+	 * Return a shallow copy of `post` with any mention facets targeting
+	 * `communityDid` cut out of the record text, and surviving facets'
+	 * byte indices re-shifted to match the shortened text.
+	 *
+	 * Bluesky facet indices are UTF-8 byte offsets, so we do all surgery
+	 * on `TextEncoder()`-encoded bytes rather than JS string char indices.
+	 * Adjacent whitespace is swallowed alongside each mention (preferring
+	 * one leading space, falling back to one trailing space) so we don't
+	 * leave dangling "  " between words after stripping.
+	 */
+	function stripCommunityMention(post: PostView, communityDid: string): PostView {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const record = (post as any).record as
+			| {
+					text?: string;
+					facets?: Array<{
+						index: { byteStart: number; byteEnd: number };
+						features: Array<{ $type: string; did?: string }>;
+					}>;
+			  }
+			| undefined
+			| null;
+		if (!record?.text || !record.facets || record.facets.length === 0) return post;
+
+		const isTargetMention = (f: NonNullable<typeof record.facets>[number]) =>
+			f.features.some(
+				(feat) =>
+					feat.$type === 'app.bsky.richtext.facet#mention' && feat.did === communityDid
+			);
+
+		const toRemove = record.facets.filter(isTargetMention);
+		if (toRemove.length === 0) return post;
+
+		const textBytes = new TextEncoder().encode(record.text);
+
+		// Expand each removal to swallow one adjacent whitespace byte —
+		// leading if possible, else trailing. We only care about 0x20
+		// (space) and 0x0a (newline) — anything else is rare enough to
+		// leave as-is.
+		const isSpace = (b: number) => b === 0x20 || b === 0x0a;
+		const expanded = toRemove
+			.map((f) => {
+				let start = f.index.byteStart;
+				let end = f.index.byteEnd;
+				if (start > 0 && isSpace(textBytes[start - 1])) start -= 1;
+				else if (end < textBytes.length && isSpace(textBytes[end])) end += 1;
+				return { start, end };
+			})
+			// Non-overlapping (facets don't overlap) so start order = byte order.
+			.sort((a, b) => a.start - b.start);
+
+		// Splice out the holes.
+		const pieces: Uint8Array[] = [];
+		let cursor = 0;
+		for (const { start, end } of expanded) {
+			if (start > cursor) pieces.push(textBytes.slice(cursor, start));
+			cursor = end;
+		}
+		if (cursor < textBytes.length) pieces.push(textBytes.slice(cursor));
+
+		const totalLen = pieces.reduce((n, p) => n + p.length, 0);
+		const merged = new Uint8Array(totalLen);
+		let offset = 0;
+		for (const p of pieces) {
+			merged.set(p, offset);
+			offset += p.length;
+		}
+		const newText = new TextDecoder().decode(merged);
+
+		// For each surviving facet, subtract the total bytes removed
+		// strictly BEFORE its position. `expanded` is sorted and
+		// non-overlapping, so one linear pass per lookup is fine.
+		const shiftByte = (byte: number): number => {
+			let removed = 0;
+			for (const r of expanded) {
+				if (r.end <= byte) removed += r.end - r.start;
+				else break;
+			}
+			return byte - removed;
+		};
+
+		const removeSet = new Set(toRemove);
+		const newFacets = record.facets
+			.filter((f) => !removeSet.has(f))
+			.map((f) => ({
+				...f,
+				index: {
+					byteStart: shiftByte(f.index.byteStart),
+					byteEnd: shiftByte(f.index.byteEnd)
+				}
+			}));
+
+		return {
+			...post,
+			record: {
+				...record,
+				text: newText,
+				facets: newFacets
+			}
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		} as any;
+	}
+
 	type CardRow = PostRow | PostWithCommunity;
 
 	let {
@@ -78,9 +182,23 @@
 			: null
 	);
 
+	// The mention-based submission flow (see `processCommunityMentions` in
+	// src/lib/reddit/bot.ts) reposts any top-level bsky post that tags the
+	// community's handle. By the time we're rendering that post inside the
+	// community feed, the `@community.atmo.garden` mention is just noise —
+	// the UI already tells the viewer which community they're looking at.
+	// Strip any mention facet pointing at `row.community_did` from the
+	// quoted PostView before handing it to `blueskyPostToPostData`, so the
+	// rendered text and the rebuilt byte-indexed facets stay in sync.
+	const communityDid = $derived(row.community_did);
+	const strippedQuoted = $derived.by(() => {
+		if (!quoted || !communityDid) return quoted ?? null;
+		return stripCommunityMention(quoted, communityDid);
+	});
+
 	const quotedEmbeds = $derived.by(() => {
-		if (!quoted) return [];
-		const { embeds } = blueskyPostToPostData(quoted as never, 'https://bsky.app');
+		if (!strippedQuoted) return [];
+		const { embeds } = blueskyPostToPostData(strippedQuoted as never, 'https://bsky.app');
 		return wireEmbedClicks(
 			embeds,
 			(handle, rkey) => goto(`/profile/${handle}/post/${rkey}`),
@@ -89,8 +207,8 @@
 	});
 
 	const quotedPostData = $derived.by(() => {
-		if (!quoted) return null;
-		const { postData } = blueskyPostToPostData(quoted as never, 'https://bsky.app');
+		if (!strippedQuoted) return null;
+		const { postData } = blueskyPostToPostData(strippedQuoted as never, 'https://bsky.app');
 		return postData;
 	});
 

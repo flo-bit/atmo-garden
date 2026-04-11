@@ -11,10 +11,12 @@ import { Client, simpleFetchHandler } from '@atcute/client';
 import type { Did, ResourceUri } from '@atcute/lexicons';
 import { decryptPassword, encryptPassword } from './crypto';
 import {
+	deletePostsByUris,
 	getCombinedFeed,
 	getCommunityByDid,
 	getJetstreamCursor,
 	getPostsDueForRefresh,
+	getPostsPastDeletionGrace,
 	hasSubmission,
 	insertCommunity,
 	insertPost,
@@ -1444,14 +1446,20 @@ export async function drainSubmissionJetstream(
  *   3. Build a single D1 batch of UPDATE statements and flush in one
  *      round-trip — far cheaper than the previous per-row await loop.
  *
- * Dead-post backoff: if a quoted post is missing from the appview
- * response (deleted, taken down, hidden), we still stamp
- * `last_refreshed_at` on the row. Without that, the row would fail the
- * `get → undefined` branch every tick and keep re-hitting the appview
- * forever. Stamping lets it back off into its normal age bucket.
+ * Missing-post tracking: if a quoted post is absent from the appview
+ * response (deleted, taken down, hidden) we stamp `missing_since` on
+ * the row the first tick we see it, and leave it set on subsequent
+ * ticks. If the post reappears (brief appview inconsistency) we clear
+ * the stamp on that tick's update. `last_refreshed_at` is always
+ * advanced so the normal age-bucket backoff kicks in instead of every
+ * tick re-fetching the same dead URI. `sweepDeletedPosts` later in the
+ * cron tick picks up rows whose `missing_since` has aged past the
+ * grace period and nukes both the bsky wrapper record and the D1 row.
  *
  * Transient failures (network error, non-ok response for the whole
- * batch) leave the rows alone so the next tick retries them.
+ * batch) leave the rows alone so the next tick retries them — in
+ * particular we do NOT stamp `missing_since` from a failed batch, so
+ * an appview outage can't trip the grace-period deletion path.
  */
 export async function refreshPostMetrics(db: D1Database): Promise<number> {
 	const due = await getPostsDueForRefresh(db, 100);
@@ -1510,19 +1518,20 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 	);
 
 	// Build one big D1 batch of UPDATEs — both the "we got metrics"
-	// path and the "quoted post is gone, back off" path. D1 processes
-	// all statements in a single round-trip, so 100 updates cost roughly
-	// the same as 1.
+	// (clears missing_since if set) and "quoted post is gone" (stamps
+	// missing_since via COALESCE so we keep the earliest detection
+	// time). D1 processes all statements in a single round-trip, so
+	// 100 updates cost roughly the same as 1.
 	const updateWithMetrics = db.prepare(
-		'UPDATE posts SET like_count = ?, reply_count = ?, repost_count = ?, last_refreshed_at = datetime("now") WHERE uri = ?'
+		'UPDATE posts SET like_count = ?, reply_count = ?, repost_count = ?, last_refreshed_at = datetime("now"), missing_since = NULL WHERE uri = ?'
 	);
-	const touchOnly = db.prepare(
-		'UPDATE posts SET last_refreshed_at = datetime("now") WHERE uri = ?'
+	const markMissing = db.prepare(
+		'UPDATE posts SET last_refreshed_at = datetime("now"), missing_since = COALESCE(missing_since, datetime("now")) WHERE uri = ?'
 	);
 
 	const statements: D1PreparedStatement[] = [];
 	let refreshed = 0;
-	let deadBackoff = 0;
+	let missing = 0;
 
 	for (const { batch, metricsByQuoted } of chunkResults) {
 		if (!metricsByQuoted) continue; // transient failure — retry next tick
@@ -1534,8 +1543,8 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 				);
 				refreshed++;
 			} else {
-				statements.push(touchOnly.bind(row.uri));
-				deadBackoff++;
+				statements.push(markMissing.bind(row.uri));
+				missing++;
 			}
 		}
 	}
@@ -1549,13 +1558,153 @@ export async function refreshPostMetrics(db: D1Database): Promise<number> {
 		}
 	}
 
-	if (deadBackoff > 0) {
+	if (missing > 0) {
 		console.log(
-			`[refreshPostMetrics] ${refreshed} refreshed, ${deadBackoff} dead posts stamped for backoff`
+			`[refreshPostMetrics] ${refreshed} refreshed, ${missing} marked missing`
 		);
 	}
 
 	return refreshed;
+}
+
+// -------------------------------------------------------------------------
+// Deleted-post sweep
+// -------------------------------------------------------------------------
+
+/** Parse `at://did:…/collection/rkey` into its collection + rkey parts. */
+function parseCommunityRecordUri(
+	uri: string
+): { collection: string; rkey: string } | null {
+	const m = uri.match(/^at:\/\/did:[^/]+\/([^/]+)\/([^/]+)$/);
+	if (!m) return null;
+	return { collection: m[1], rkey: m[2] };
+}
+
+/**
+ * Grace period between "first tick we saw the post missing from the
+ * appview" and actually deleting it. Short enough that users don't
+ * stare at `(quoted post unavailable)` placeholders for long, long
+ * enough to weather brief appview inconsistencies without nuking valid
+ * submissions.
+ */
+const DELETE_GRACE_HOURS = 2;
+
+/**
+ * Per-tick cap so the sweep can't starve the rest of the cron if a
+ * massive takedown wave hits. Unprocessed rows stay queued and get
+ * picked up on the next tick.
+ */
+const SWEEP_LIMIT = 50;
+
+/**
+ * Nuke wrapper records for posts whose underlying bsky post has been
+ * deleted / taken down. Refresh stamps `missing_since` the first tick
+ * `getPosts` omits the quoted URI; we wait `DELETE_GRACE_HOURS` and
+ * then:
+ *
+ *   1. Delete the community account's wrapper record from its PDS via
+ *      DPoP (`app.bsky.feed.post` for quotes or `app.bsky.feed.repost`
+ *      for straight boosts).
+ *   2. For quote posts, also delete the paired threadgate record (same
+ *      rkey, different collection).
+ *   3. Delete the cached D1 row.
+ *
+ * Best-effort on the bsky side: if `deleteRecord` fails (network
+ * blip, record already gone, broken community credentials, etc.) we
+ * STILL delete the D1 row. Leaving the D1 row would mean retrying
+ * forever on a row the UI no longer trusts anyway; a stale wrapper
+ * record on bsky is the lesser evil and will usually get cleaned up
+ * by the record being a dangling reference.
+ */
+export async function sweepDeletedPosts(
+	env: App.Platform['env'],
+	db: D1Database
+): Promise<number> {
+	const dueRows = await getPostsPastDeletionGrace(db, DELETE_GRACE_HOURS, SWEEP_LIMIT);
+	if (dueRows.length === 0) return 0;
+
+	// Group by community so we can `loadClient` once per community
+	// instead of once per row.
+	const byCommunity = new Map<string, string[]>();
+	for (const r of dueRows) {
+		const arr = byCommunity.get(r.community_did) ?? [];
+		arr.push(r.uri);
+		byCommunity.set(r.community_did, arr);
+	}
+
+	let deleted = 0;
+	const drainedFromD1: string[] = [];
+
+	for (const [communityDid, uris] of byCommunity) {
+		const communityRow = await getCommunityByDid(db, communityDid);
+		if (!communityRow) {
+			// Community is gone (manually cleaned up, or `deleteCommunity`
+			// race). Drop the stragglers from D1 with no bsky call.
+			drainedFromD1.push(...uris);
+			deleted += uris.length;
+			continue;
+		}
+
+		let client: WelcomeMatClient;
+		try {
+			client = await loadClient(env, communityRow);
+		} catch (e) {
+			console.error(
+				`[sweepDeletedPosts] loadClient failed for ${communityRow.handle}`,
+				e
+			);
+			// Leave the rows alone — retry next tick once the failure
+			// (bad creds / rookery down) hopefully clears.
+			continue;
+		}
+
+		for (const uri of uris) {
+			const parsed = parseCommunityRecordUri(uri);
+			if (!parsed) {
+				console.error('[sweepDeletedPosts] unparseable uri, dropping', uri);
+				drainedFromD1.push(uri);
+				deleted++;
+				continue;
+			}
+			const { collection, rkey } = parsed;
+
+			// Delete the wrapper record (quote post or repost).
+			try {
+				await client.deleteRecord(collection, rkey);
+			} catch (e) {
+				console.error(
+					`[sweepDeletedPosts] deleteRecord(${collection}/${rkey}) on ${communityRow.handle} failed`,
+					e
+				);
+				// Fall through — we still drop the D1 row below.
+			}
+
+			// Quote posts carry a paired threadgate at the same rkey
+			// (see `createSubmissionPost`). Reposts don't. Non-fatal.
+			if (collection === 'app.bsky.feed.post') {
+				try {
+					await client.deleteRecord('app.bsky.feed.threadgate', rkey);
+				} catch {
+					// Probably already gone or never existed (pre-threadgate
+					// rows). Not worth logging at error level.
+				}
+			}
+
+			drainedFromD1.push(uri);
+			deleted++;
+		}
+	}
+
+	if (drainedFromD1.length > 0) {
+		try {
+			await deletePostsByUris(db, drainedFromD1);
+		} catch (e) {
+			console.error('[sweepDeletedPosts] D1 delete batch failed', e);
+		}
+	}
+
+	console.log(`[sweepDeletedPosts] deleted ${deleted} rows`);
+	return deleted;
 }
 
 // -------------------------------------------------------------------------
@@ -1569,15 +1718,14 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	webSubmissionsCreated: number;
 	jetstreamEvents: number;
 	postsRefreshed: number;
+	postsDeleted: number;
 	errors: string[];
 }> {
-	console.log('[cron] runCronTick start');
 	const db = env.DB;
 	if (!db) throw new Error('DB binding missing');
 
 	const errors: string[] = [];
 	const communities = await listCommunities(db);
-	console.log(`[cron] listCommunities → ${communities.length} rows`);
 
 	let postsCreated = 0;
 	let mentionsCreated = 0;
@@ -1596,7 +1744,6 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		let posts = 0;
 		let mentions = 0;
 
-		console.log(`[cron] ${row.handle} — DMs`);
 		try {
 			posts = await processCommunityDms(env, db, row);
 		} catch (e) {
@@ -1604,9 +1751,6 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 			errors.push(`${row.handle}: ${String(e)}`);
 		}
 
-		console.log(
-			`[cron] ${row.handle} — mentions (cursor=${row.last_mention_seen_at ?? 'NULL'})`
-		);
 		try {
 			mentions = await processCommunityMentions(env, db, row);
 		} catch (e) {
@@ -1645,6 +1789,15 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		return 0;
 	});
 
+	// Sweep runs AFTER refresh so the same tick that stamps a new row
+	// as missing never also deletes it — the grace-period check in
+	// `getPostsPastDeletionGrace` guarantees this, but running the two
+	// in order is clearer.
+	const postsDeleted = await sweepDeletedPosts(env, db).catch((e) => {
+		errors.push(`sweep: ${String(e)}`);
+		return 0;
+	});
+
 	return {
 		communitiesChecked: communities.length,
 		postsCreated,
@@ -1652,6 +1805,7 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		webSubmissionsCreated: jetstreamResult.created,
 		jetstreamEvents: jetstreamResult.events,
 		postsRefreshed,
+		postsDeleted,
 		errors
 	};
 }

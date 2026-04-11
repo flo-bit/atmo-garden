@@ -51,6 +51,14 @@ export type PostRow = {
 	like_count_at_submission: number | null;
 	indexed_at: string;
 	last_refreshed_at: string;
+	/**
+	 * ISO-8601 timestamp of the first tick that saw the underlying bsky
+	 * post as missing from `app.bsky.feed.getPosts`. NULL while the post
+	 * is healthy; cleared if the post reappears. After a grace period
+	 * (see `sweepDeletedPosts` in bot.ts) the wrapper record + this row
+	 * get cleaned up.
+	 */
+	missing_since: string | null;
 };
 
 export type PostWithCommunity = PostRow & {
@@ -200,7 +208,10 @@ export async function hasSubmission(
 	return !!res;
 }
 
-export async function insertPost(db: D1Database, row: Omit<PostRow, 'last_refreshed_at'>): Promise<boolean> {
+export async function insertPost(
+	db: D1Database,
+	row: Omit<PostRow, 'last_refreshed_at' | 'missing_since'>
+): Promise<boolean> {
 	try {
 		await db
 			.prepare(
@@ -283,12 +294,17 @@ export async function getRecentPostsForCommunity(
 	offset = 0
 ): Promise<PostWithCommunity[]> {
 	const { where, order } = sortClauses(sort);
+	// Hide rows currently flagged missing — between the first refresh
+	// tick that detects the underlying bsky post is gone and the sweep
+	// cleaning them up (grace period), we don't want users to see
+	// `(quoted post unavailable)` placeholders in the feed.
 	const res = await db
 		.prepare(
 			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
 			 FROM posts p
 			 JOIN communities c ON c.did = p.community_did
 			 WHERE p.community_did = ?
+			   AND p.missing_since IS NULL
 			 ${where}
 			 ORDER BY ${order}
 			 LIMIT ? OFFSET ?`
@@ -327,17 +343,19 @@ export async function getCombinedFeed(
 	offset = 0
 ): Promise<PostWithCommunity[]> {
 	const { where, order } = sortClauses(sort);
-	// sortClauses returns a fragment starting with `AND` since it was
-	// written for the community-scoped query that always has a
-	// `WHERE p.community_did = ?` clause. For the home feed there's no
-	// base WHERE, so we rewrite the leading `AND` to `WHERE`.
-	const whereClause = where ? where.replace(/^\s*AND\s+/, 'WHERE ') : '';
+	// Same rationale as `getRecentPostsForCommunity`: drop rows whose
+	// underlying post is flagged as gone. `sortClauses` returns a
+	// fragment starting with `AND` (written for the community-scoped
+	// query's `WHERE p.community_did = ?` base). For the home feed we
+	// anchor on the missing_since filter so every sort's fragment
+	// stays consistent as an `AND`-prefixed addition.
 	const res = await db
 		.prepare(
 			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
 			 FROM posts p
 			 JOIN communities c ON c.did = p.community_did
-			 ${whereClause}
+			 WHERE p.missing_since IS NULL
+			 ${where}
 			 ORDER BY ${order}
 			 LIMIT ? OFFSET ?`
 		)
@@ -431,4 +449,48 @@ export async function getPostsDueForRefresh(
 		.bind(limit)
 		.all<{ uri: string; quoted_post_uri: string }>();
 	return res.results ?? [];
+}
+
+/**
+ * Rows past the deletion grace period — used by the cron's
+ * `sweepDeletedPosts` step. A row qualifies when `missing_since` is
+ * non-NULL (set by the refresh path on the first tick that the quoted
+ * bsky post dropped out of `getPosts`) AND the grace period has fully
+ * elapsed since that stamp. Ordered oldest-missing-first so chronically
+ * dead rows get cleaned up before newly-detected ones when the per-tick
+ * cap is hit.
+ */
+export async function getPostsPastDeletionGrace(
+	db: D1Database,
+	graceHours: number,
+	limit: number
+): Promise<{ uri: string; community_did: Did }[]> {
+	const res = await db
+		.prepare(
+			`SELECT uri, community_did
+			 FROM posts
+			 WHERE missing_since IS NOT NULL
+			   AND (julianday('now') - julianday(missing_since)) * 24 >= ?
+			 ORDER BY missing_since ASC
+			 LIMIT ?`
+		)
+		.bind(graceHours, limit)
+		.all<{ uri: string; community_did: Did }>();
+	return res.results ?? [];
+}
+
+/**
+ * Delete a set of cached submission rows by URI. Used by the sweep
+ * after the community-account wrapper records have been deleted from
+ * bsky (best-effort — we still drop the D1 row even if the bsky delete
+ * fails, to avoid indefinite retries on broken rows).
+ */
+export async function deletePostsByUris(
+	db: D1Database,
+	uris: string[]
+): Promise<void> {
+	if (uris.length === 0) return;
+	await db.batch(
+		uris.map((uri) => db.prepare('DELETE FROM posts WHERE uri = ?').bind(uri))
+	);
 }

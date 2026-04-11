@@ -193,60 +193,6 @@ export const unfollowUser = command(
 	}
 );
 
-export const createRsvp = command(
-	v.object({
-		eventUri: v.string(),
-		eventCid: v.string(),
-		status: v.optional(v.string())
-	}),
-	async (input) => {
-		const { locals } = getRequestEvent();
-		if (!locals.client || !locals.did) error(401, 'Not authenticated');
-
-		const rkey = TID.now();
-		const res = await locals.client.post('com.atproto.repo.createRecord', {
-			input: {
-				repo: locals.did,
-				collection: 'community.lexicon.calendar.rsvp',
-				rkey,
-				record: {
-					$type: 'community.lexicon.calendar.rsvp',
-					status: input.status ?? 'community.lexicon.calendar.rsvp#going',
-					subject: { uri: input.eventUri, cid: input.eventCid },
-					createdAt: new Date().toISOString()
-				}
-			}
-		});
-
-		if (!res.ok) error(res.status, 'Failed to RSVP');
-		return { uri: res.data.uri };
-	}
-);
-
-export const deleteRsvp = command(
-	v.object({
-		rsvpUri: v.string()
-	}),
-	async (input) => {
-		const { locals } = getRequestEvent();
-		if (!locals.client || !locals.did) error(401, 'Not authenticated');
-
-		const parts = input.rsvpUri.split('/');
-		const rkey = parts[parts.length - 1];
-
-		const res = await locals.client.post('com.atproto.repo.deleteRecord', {
-			input: {
-				repo: locals.did,
-				collection: 'community.lexicon.calendar.rsvp',
-				rkey
-			}
-		});
-
-		if (!res.ok) error(res.status, 'Failed to cancel RSVP');
-		return { ok: true };
-	}
-);
-
 export const getProfile = command(
 	v.object({
 		actor: v.string()

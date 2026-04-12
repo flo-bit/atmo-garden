@@ -414,8 +414,18 @@ export async function updateCommunity(
 				'app.bsky.actor.profile',
 				'self'
 			);
-			const baseValue =
-				existing?.value ?? ({ $type: 'app.bsky.actor.profile' } as Record<string, unknown>);
+			// If getRecord fails (PDS down, auth issue, etc.) we MUST
+			// abort rather than proceed with an empty base — writing
+			// `{ $type: 'app.bsky.actor.profile' }` with no avatar /
+			// description / displayName would clobber the entire
+			// on-network profile. The old code fell back to an empty
+			// object and silently nuked everything.
+			if (!existing?.value) {
+				throw new Error(
+					'Failed to read existing profile record from PDS — aborting update to prevent data loss'
+				);
+			}
+			const baseValue = existing.value;
 
 			const next: Record<string, unknown> = { ...baseValue, $type: 'app.bsky.actor.profile' };
 

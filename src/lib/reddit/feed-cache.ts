@@ -113,13 +113,32 @@ export async function writeSortedList(
 }
 
 /**
- * Read a sorted list through the edge cache, falling back to KV.
+ * Read a sorted list through the edge cache, falling back to KV,
+ * and optionally falling back further to a caller-provided fresh
+ * fetch if both cache tiers come up empty.
  *
  * Flow:
- *   1. Check Workers Cache API. Hit → return parsed JSON.
- *   2. Miss → fetch from KV. Returns [] if the cron hasn't populated
- *      it yet (brand-new deploy or KV key was manually cleared).
- *   3. Populate the edge cache with a 30 s `s-maxage`.
+ *   1. Check Workers Cache API. Hit with a non-empty list → return it.
+ *      (Empty hits still fall through to the KV + fresh-fetch path
+ *      so we can recover from a previous cache-miss window that
+ *      pinned an empty result.)
+ *   2. Miss → fetch from KV.
+ *   3. KV also empty AND `fetchFresh` provided → run it once,
+ *      write-through to KV so other colos benefit, and use the
+ *      result for this request.
+ *   4. Populate the edge cache with a 30 s `s-maxage` for the next
+ *      request from this colo.
+ *
+ * The `fetchFresh` callback is the reactive-rebuild hatch: the cron
+ * normally re-populates KV every minute, but there are two edge
+ * cases where the cache can legitimately be empty:
+ *
+ *   - Fresh deploy before the first cron tick runs
+ *   - KV `expirationTtl` kicks in after the cron fails for 5+ min
+ *
+ * In both cases, serving an empty feed would be bad UX. The callback
+ * runs `getCombinedFeed` directly and fixes itself — one D1 query
+ * cost on the rare miss, amortized across future requests.
  *
  * The 30 s edge TTL is chosen to be well under the cron tick
  * frequency, so each colo hits KV at most ~2×/min per sort — ~1.4 M
@@ -127,13 +146,18 @@ export async function writeSortedList(
  */
 export async function getCachedSortedList(
 	env: App.Platform['env'],
-	sort: PostSort
+	sort: PostSort,
+	fetchFresh?: () => Promise<PostWithCommunity[]>
 ): Promise<PostWithCommunity[]> {
 	const cacheKey = cacheKeyForSort(sort);
 	const cached = await cfCache.match(cacheKey);
 	if (cached) {
 		try {
-			return (await cached.json()) as PostWithCommunity[];
+			const parsed = (await cached.json()) as PostWithCommunity[];
+			// Non-empty edge-cache hit wins. If the cached value is
+			// empty we drop through to KV + fresh-fetch so we don't
+			// stay pinned to "no posts" after a recovery.
+			if (parsed.length > 0) return parsed;
 		} catch (e) {
 			console.error(`[feed-cache] cached list parse failed for ${sort}`, e);
 			// fall through to re-fetch
@@ -141,7 +165,24 @@ export async function getCachedSortedList(
 	}
 
 	const raw = await env.FEEDS_CACHE.get(kvKeyForSort(sort));
-	const list: PostWithCommunity[] = raw ? (JSON.parse(raw) as PostWithCommunity[]) : [];
+	let list: PostWithCommunity[] = raw ? (JSON.parse(raw) as PostWithCommunity[]) : [];
+
+	// Reactive rebuild: cron hasn't populated KV yet (or the safety
+	// TTL kicked in) AND the caller gave us a way to query D1
+	// directly. Run the underlying query once, write the result
+	// back to KV so other colos stop seeing empty too, and use it
+	// for this request.
+	if (list.length === 0 && fetchFresh) {
+		try {
+			const fresh = await fetchFresh();
+			if (fresh.length > 0) {
+				list = fresh;
+				await writeSortedList(env, sort, list);
+			}
+		} catch (e) {
+			console.error(`[feed-cache] fetchFresh failed for ${sort}`, e);
+		}
+	}
 
 	await cfCache.put(
 		cacheKey,

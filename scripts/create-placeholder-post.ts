@@ -64,8 +64,13 @@ if (!PDS || !IDENTIFIER || !APP_PASSWORD) {
 // Post content + richtext facet for the https://atmo.garden link
 // ---------------------------------------------------------------------------
 
+// Text shown as the ONE AND ONLY entry in `following-hot` /
+// `following-new` when the viewer follows zero atmo.garden
+// communities. Needs to carry the full explanation on its own
+// (no fallback feed content behind it anymore), so leads with
+// the problem, then the fix, then the link.
 const POST_TEXT =
-	'🌱 Follow communities on atmo.garden to personalize this feed.\n\nBrowse communities → https://atmo.garden';
+	'👋 Your atmo.garden following feed is empty!\n\natmo.garden is a experimental community layer for surfacing bsky posts. Follow community accounts to see their posts in this feed.\n\nDiscover communities → https://atmo.garden';
 
 /** Find the UTF-8 byte range of `substring` inside `text`, or null. */
 function byteRange(

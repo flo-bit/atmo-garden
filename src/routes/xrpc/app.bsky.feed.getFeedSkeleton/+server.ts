@@ -59,8 +59,9 @@
 
 import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
-import type { PostSort, PostWithCommunity } from '$lib/reddit/db';
+import { getCombinedFeed, type PostSort, type PostWithCommunity } from '$lib/reddit/db';
 import {
+	FEED_CACHE_LIMIT,
 	getCachedSortedList,
 	getCachedViewerCommunityFollows,
 	parseViewerDidFromJwt
@@ -192,8 +193,14 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 		Number.isFinite(cursorParsed) && cursorParsed >= 0 ? cursorParsed : 0;
 
 	// Pull the materialized global sorted list once — both scopes
-	// read from the same cached entry.
-	const sortedList = await getCachedSortedList(env, config.sort);
+	// read from the same cached entry. `fetchFresh` is the reactive-
+	// rebuild hatch: if both the edge cache and KV come up empty
+	// (fresh deploy or KV TTL expiry), run `getCombinedFeed` once
+	// and write the result back to KV so subsequent requests (and
+	// other colos) pick it up without re-querying.
+	const sortedList = await getCachedSortedList(env, config.sort, () =>
+		getCombinedFeed(env.DB, FEED_CACHE_LIMIT, config.sort, 0)
+	);
 
 	if (config.scope === 'all') {
 		const slice = sortedList
@@ -221,24 +228,20 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 	}
 
 	if (filtered.length === 0) {
-		// Empty-state: show the placeholder post (if configured) then
-		// fall back to the all-<sort> list so the feed always has
-		// content. Placeholder absent (env var empty) → just fall back
-		// to the all-<sort> contents.
+		// Empty-state: show ONLY the placeholder post (if configured).
+		// No fallback to the all-<sort> contents — a user who follows
+		// zero communities sees exactly one entry explaining what this
+		// feed is and how to populate it. Placeholder absent (env var
+		// empty) → empty feed with no entries at all.
+		//
+		// Only emitted on the first page (offset 0); subsequent page
+		// requests return an empty feed so we don't duplicate the
+		// placeholder on infinite scroll.
 		const placeholderUri = env.FOLLOWING_FEED_PLACEHOLDER_URI ?? '';
-		const fallback = sortedList
-			.slice(offset, offset + limit)
-			.map(rowToSkeleton)
-			.filter((x): x is SkeletonFeedPost => x !== null);
-
-		// Only prepend the placeholder on the first page (offset 0) —
-		// otherwise subsequent pages would have it re-inserted.
 		const entries: SkeletonFeedPost[] =
-			offset === 0 && placeholderUri
-				? [{ post: placeholderUri }, ...fallback].slice(0, limit)
-				: fallback;
-
-		return json(buildResponse(entries, offset, limit, sortedList.length));
+			offset === 0 && placeholderUri ? [{ post: placeholderUri }] : [];
+		// No cursor — this is a 1-item "feed" with nothing to paginate.
+		return json({ feed: entries });
 	}
 
 	// Normal path: viewer has real subscriptions.

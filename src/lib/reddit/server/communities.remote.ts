@@ -3,6 +3,7 @@ import { command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 import {
 	getRecentPostsForCommunity,
+	getCombinedFeed,
 	getPostByUri,
 	listCommunities,
 	getCommunityByHandle,
@@ -267,7 +268,16 @@ export const getHomeFeed = command(
 		const env = platform?.env;
 		if (!env) return [];
 
-		const list = await getCachedSortedList(env, (input.sort ?? 'hot') as PostSort);
+		const sort = (input.sort ?? 'hot') as PostSort;
+		// `fetchFresh` is the reactive-rebuild hatch in
+		// `getCachedSortedList` — runs only if both the edge cache
+		// and KV come up empty (fresh deploy, or KV TTL expiry
+		// because the cron hasn't ticked in a while). The result is
+		// written back to KV so subsequent requests pick it up
+		// without re-running the query.
+		const list = await getCachedSortedList(env, sort, () =>
+			getCombinedFeed(env.DB, FEED_CACHE_LIMIT, sort, 0)
+		);
 		const offset = Math.max(0, input.offset ?? 0);
 		const limit = Math.max(1, Math.min(FEED_CACHE_LIMIT, input.limit ?? 50));
 		return list.slice(offset, offset + limit);

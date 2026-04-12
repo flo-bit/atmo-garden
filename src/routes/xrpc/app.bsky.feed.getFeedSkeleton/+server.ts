@@ -220,7 +220,7 @@ export const GET: RequestHandler = async ({ url, request, platform }) => {
 
 	let filtered: PostWithCommunity[] = [];
 	if (viewerDid) {
-		const followed = await getCachedViewerCommunityFollows(env, viewerDid);
+		const followed = await getCachedViewerCommunityFollows(env, viewerDid, env.DB);
 		if (followed.length > 0) {
 			const followedSet = new Set(followed);
 			filtered = sortedList.filter((r) => followedSet.has(r.community_did));

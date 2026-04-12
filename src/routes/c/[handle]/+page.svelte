@@ -5,7 +5,7 @@
 	import { page } from '$app/state';
 	import { Avatar, Button } from '@foxui/core';
 	import { Loader2, Check, UserPlus, Plus, Pencil } from '@lucide/svelte';
-	import { getCommunity, getCommunityPosts, removePost } from '$lib/reddit/server/communities.remote';
+	import { getCommunity, getCommunityPosts, getViewerCommunityFollows, removePost } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
 	import { followUser, unfollowUser, getProfile, resolveProfiles } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
@@ -144,29 +144,56 @@
 		community = null;
 		posts = [];
 		quoted = {};
+		submitters = {};
 		hasMore = true;
 		followUri = null;
 		sort = 'hot';
 		try {
-			const info = await getCommunity({ handle });
+			// Stage 1: community info + first page of posts in parallel.
+			// Both only need the handle so there's no data dependency.
+			const [info, rows] = await Promise.all([
+				getCommunity({ handle }),
+				getCommunityPosts({ handle, limit: 50, sort: 'hot' })
+			]);
 			if (!info) {
 				loadError = 'Community not found';
 				loading = false;
 				return;
 			}
 			community = info;
-			await loadPosts(handle, 'hot');
+			posts = rows;
+			hasMore = rows.length >= 50;
 
-			// If the viewer is signed in, fetch viewer.following from the
-			// community's profile to seed the join-button state.
-			if (user.did) {
-				try {
-					const profile = await getProfile({ actor: info.did });
-					followUri = profile.viewer?.following ?? null;
-				} catch (e) {
-					console.error('[community] getProfile failed', e);
-				}
+			// Stage 2: hydrate quoted posts, resolve submitter profiles,
+			// and check follow state — all in parallel. Each is an
+			// independent server call that doesn't depend on the
+			// others' output.
+			const parallelOps: Promise<void>[] = [];
+			if (rows.length > 0) {
+				parallelOps.push(
+					(async () => {
+						const [quotedRes, profileRes] = await Promise.all([
+							getQuotedPosts({ uris: rows.map((r) => r.quoted_post_uri) }),
+							resolveProfiles({ dids: uniqueAuthorDids(rows) })
+						]);
+						quoted = quotedRes.posts;
+						submitters = profileRes.profiles;
+					})()
+				);
 			}
+			if (user.did) {
+				parallelOps.push(
+					(async () => {
+						try {
+							const { dids } = await getViewerCommunityFollows({});
+							followUri = dids.includes(info.did) ? 'pending' : null;
+						} catch (e) {
+							console.error('[community] getViewerCommunityFollows failed', e);
+						}
+					})()
+				);
+			}
+			await Promise.all(parallelOps);
 		} catch (e) {
 			console.error(e);
 			loadError = 'Failed to load community';
@@ -208,8 +235,15 @@
 		if (joinLoading) return;
 		joinLoading = true;
 		try {
-			if (isFollowing && followUri) {
-				await unfollowUser({ followUri });
+			if (isFollowing) {
+				// Lazy-resolve the follow-record URI via getProfile —
+				// we only store the DID set, not the AT-URIs, so the
+				// single extra call only fires on the rare unfollow path.
+				const profile = await getProfile({ actor: community.did });
+				const resolvedUri = profile.viewer?.following;
+				if (resolvedUri) {
+					await unfollowUser({ followUri: resolvedUri });
+				}
 				followUri = null;
 			} else {
 				const result = await followUser({ did: community.did });

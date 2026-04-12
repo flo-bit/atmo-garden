@@ -27,7 +27,7 @@ export const POST: RequestHandler = async ({ platform, locals }) => {
 	// UI doesn't need the returned list today, but we include it in
 	// the response in case it wants to render immediate feedback
 	// ("you now follow N communities") without a second round-trip.
-	const followed = await invalidateViewerCommunityFollows(env, locals.did);
+	const followed = await invalidateViewerCommunityFollows(env, locals.did, env.DB);
 
 	return json({ ok: true, followedCount: followed.length });
 };

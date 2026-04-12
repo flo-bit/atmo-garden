@@ -19,7 +19,7 @@ import {
 	refreshCommunityCache,
 	removeCommunityPost
 } from '../bot';
-import { getCachedSortedList, FEED_CACHE_LIMIT } from '../feed-cache';
+import { getCachedSortedList, getCachedViewerCommunityFollows, FEED_CACHE_LIMIT } from '../feed-cache';
 import { parseListUri } from '../list-uri';
 import {
 	ACCENT_COLORS,
@@ -173,14 +173,40 @@ export const register = command(
 );
 
 export const getCommunities = command(
-	v.object({}),
-	async (): Promise<PublicCommunity[]> => {
+	v.object({
+		limit: v.optional(v.number()),
+		offset: v.optional(v.number())
+	}),
+	async (input): Promise<PublicCommunity[]> => {
 		const { platform } = getRequestEvent();
 		const env = platform?.env;
 		if (!env || !env.DB) return [];
 
 		const rows = await listCommunities(env.DB);
-		return rows.map(sanitize);
+		const offset = Math.max(0, input.offset ?? 0);
+		const limit = Math.max(1, Math.min(100, input.limit ?? 30));
+		return rows.slice(offset, offset + limit).map(sanitize);
+	}
+);
+
+/**
+ * Return the set of community DIDs the authenticated viewer follows
+ * on Bluesky. Backed by the same edge-cached + `getRelationships`
+ * lookup that the following-feed generator uses — scales with the
+ * number of communities (~100, stable), not with the user's follow
+ * count, and caches for 5 min per colo.
+ *
+ * Returns `{ dids: [] }` for signed-out viewers.
+ */
+export const getViewerCommunityFollows = command(
+	v.object({}),
+	async (): Promise<{ dids: string[] }> => {
+		const { platform, locals } = getRequestEvent();
+		const env = platform?.env;
+		if (!env || !locals.did) return { dids: [] };
+
+		const dids = await getCachedViewerCommunityFollows(env, locals.did, env.DB);
+		return { dids };
 	}
 );
 

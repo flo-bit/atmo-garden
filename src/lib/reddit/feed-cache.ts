@@ -224,19 +224,43 @@ export async function writeAllCommunityDids(
  * Read the list of all known community DIDs, edge-cached. Used by
  * `fetchViewerCommunityRelationships` to know which DIDs to ask bsky
  * about in each `getRelationships` batch.
+ *
+ * Optional `db` parameter enables the same reactive-rebuild pattern
+ * as `getCachedSortedList`: if both the edge cache and KV come up
+ * empty (fresh deploy, KV TTL expiry, dev without recent cron run),
+ * falls back to a direct D1 query and repopulates KV for next time.
  */
-export async function getAllCommunityDids(env: App.Platform['env']): Promise<string[]> {
+export async function getAllCommunityDids(
+	env: App.Platform['env'],
+	db?: D1Database
+): Promise<string[]> {
 	const cached = await cfCache.match(COMMUNITY_DIDS_CACHE_KEY);
 	if (cached) {
 		try {
-			return (await cached.json()) as string[];
+			const parsed = (await cached.json()) as string[];
+			if (parsed.length > 0) return parsed;
 		} catch {
 			/* fall through */
 		}
 	}
 
 	const raw = await env.FEEDS_CACHE.get(COMMUNITY_DIDS_KV_KEY);
-	const dids: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+	let dids: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+
+	// Reactive rebuild: KV empty and caller gave us a DB handle.
+	if (dids.length === 0 && db) {
+		try {
+			const rows = await listCommunities(db);
+			dids = rows.map((r) => r.did);
+			if (dids.length > 0) {
+				await env.FEEDS_CACHE.put(COMMUNITY_DIDS_KV_KEY, JSON.stringify(dids), {
+					expirationTtl: 3600
+				});
+			}
+		} catch (e) {
+			console.error('[feed-cache] community DIDs fallback failed', e);
+		}
+	}
 
 	await cfCache.put(
 		COMMUNITY_DIDS_CACHE_KEY,
@@ -351,7 +375,8 @@ export async function fetchViewerCommunityRelationships(
  */
 export async function getCachedViewerCommunityFollows(
 	env: App.Platform['env'],
-	viewerDid: string
+	viewerDid: string,
+	db?: D1Database
 ): Promise<string[]> {
 	const cacheKey = viewerFollowsCacheKey(viewerDid);
 	const cached = await cfCache.match(cacheKey);
@@ -363,7 +388,7 @@ export async function getCachedViewerCommunityFollows(
 		}
 	}
 
-	const communityDids = await getAllCommunityDids(env);
+	const communityDids = await getAllCommunityDids(env, db);
 	const followed = await fetchViewerCommunityRelationships(viewerDid, communityDids);
 
 	await cfCache.put(
@@ -393,14 +418,15 @@ export async function getCachedViewerCommunityFollows(
  */
 export async function invalidateViewerCommunityFollows(
 	env: App.Platform['env'],
-	viewerDid: string
+	viewerDid: string,
+	db?: D1Database
 ): Promise<string[]> {
 	const cacheKey = viewerFollowsCacheKey(viewerDid);
 	await cfCache.delete(cacheKey);
 	// Eagerly repopulate so the refresh round-trip includes the fresh
 	// data — the UI can immediately use it (or at least knows the
 	// bsky graph has propagated).
-	return getCachedViewerCommunityFollows(env, viewerDid);
+	return getCachedViewerCommunityFollows(env, viewerDid, db);
 }
 
 // ---------------------------------------------------------------------------

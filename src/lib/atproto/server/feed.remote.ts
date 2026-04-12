@@ -379,3 +379,4 @@ export const getBookmarks = command(
 		return { posts, cursor: data.cursor ?? null };
 	}
 );
+

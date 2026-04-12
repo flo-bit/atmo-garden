@@ -370,9 +370,13 @@ export const editCommunity = command(
 		}
 
 		// Parse + normalize the optional allowlist URL into a canonical
-		// at-URI, same as the register flow.
+		// at-URI, same as the register flow. Process the list URL
+		// whenever it's provided — not just when `whoCanSubmit` itself
+		// changes — so that switching to a different list while staying
+		// in 'list' mode actually takes effect.
 		let listUri: string | null | undefined;
-		if (input.whoCanSubmit === 'list') {
+		const effectiveWhoCanSubmit = input.whoCanSubmit ?? config.whoCanSubmit;
+		if (effectiveWhoCanSubmit === 'list' && input.listUrl !== undefined) {
 			if (!input.listUrl?.trim()) {
 				error(400, 'List URL is required when "members of a list" is selected');
 			}

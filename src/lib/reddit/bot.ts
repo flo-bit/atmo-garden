@@ -387,9 +387,26 @@ export async function updateCommunity(
 		avatarBlob = await client.uploadBlob(opts.avatar.bytes, opts.avatar.mimeType);
 	}
 
+	// When the access mode changes, the pinned welcome post needs to
+	// be replaced — its text says either "Everyone can submit posts"
+	// or "People from this list can submit posts" with a link to the
+	// specific list, so changing `whoCanSubmit` or the `listUri` makes
+	// the old post stale. We create the replacement BEFORE touching
+	// the profile so we have the new `{uri, cid}` to pin.
+	let newPinnedPost: { uri: string; cid: string } | null = null;
+	if (opts.whoCanSubmit !== undefined) {
+		const shortHandle = row.handle.split('.')[0];
+		newPinnedPost = await createWelcomePost(client, shortHandle, {
+			whoCanSubmit: opts.whoCanSubmit,
+			listUri: opts.listUri ?? null
+		});
+	}
+
 	// Merge into the existing profile record. We read it first so we
 	// don't clobber fields we don't touch (displayName etc.).
-	if (avatarBlob || opts.description !== undefined) {
+	const touchProfile =
+		!!avatarBlob || opts.description !== undefined || newPinnedPost !== null;
+	if (touchProfile) {
 		try {
 			const existing = await getRecord(
 				row.pds,
@@ -416,6 +433,25 @@ export async function updateCommunity(
 					);
 				}
 				next.description = full;
+			}
+			if (newPinnedPost) {
+				// Delete the old pinned post before swapping in the new
+				// one. Best-effort — if the record is already gone or the
+				// PDS rejects us, we still update the profile pin.
+				const oldPinned = baseValue.pinnedPost as
+					| { uri?: string }
+					| undefined;
+				if (oldPinned?.uri) {
+					const parsed = parseCommunityRecordUri(oldPinned.uri);
+					if (parsed) {
+						try {
+							await client.deleteRecord(parsed.collection, parsed.rkey);
+						} catch {
+							/* old post might already be gone */
+						}
+					}
+				}
+				next.pinnedPost = newPinnedPost;
 			}
 
 			await client.putRecord('app.bsky.actor.profile', 'self', next);

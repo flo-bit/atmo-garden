@@ -20,7 +20,7 @@
 		// Created once via `pnpm tsx scripts/create-placeholder-post.ts`
 		// and pasted here. Empty string disables the placeholder (feed
 		// falls back directly to the all-<sort> contents).
-		"FOLLOWING_FEED_PLACEHOLDER_URI": "at://did:plc:tl7hmwtzr2lriwkddcqly4wv/app.bsky.feed.post/3mjb7kf32jv2x"
+		"FOLLOWING_FEED_PLACEHOLDER_URI": "at://did:plc:tl7hmwtzr2lriwkddcqly4wv/app.bsky.feed.post/3mjb7x43s3t25"
 	},
 	"kv_namespaces": [
 		{

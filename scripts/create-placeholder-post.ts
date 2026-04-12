@@ -61,16 +61,30 @@ if (!PDS || !IDENTIFIER || !APP_PASSWORD) {
 }
 
 // ---------------------------------------------------------------------------
-// Post content + richtext facet for the https://atmo.garden link
+// Post content + embed (atmo.garden communities list)
 // ---------------------------------------------------------------------------
 
 // Text shown as the ONE AND ONLY entry in `following-hot` /
 // `following-new` when the viewer follows zero atmo.garden
-// communities. Needs to carry the full explanation on its own
-// (no fallback feed content behind it anymore), so leads with
-// the problem, then the fix, then the link.
+// communities. Leads with the problem, then directs readers at
+// the embedded list (which bsky renders as a tappable card that
+// lets them follow individual communities from inside the client),
+// then links to the website as a secondary CTA.
 const POST_TEXT =
-	'👋 Your atmo.garden following feed is empty!\n\natmo.garden is a experimental community layer for surfacing bsky posts. Follow community accounts to see their posts in this feed.\n\nDiscover communities → https://atmo.garden';
+	'🌱 Your atmo.garden following feed is empty!\n\nFollow atmo.garden community accounts below to populate it — tap the list to see all communities and follow any from inside bsky.\n\nLearn more → https://atmo.garden';
+
+// Embedded bsky list — the "atmo.garden communities" public list
+// published by the atmo.garden account. When bsky's appview
+// hydrates this post for a feed viewer, it renders the list as a
+// tappable card showing the list name, description, and member
+// preview. Tapping opens the list in the user's bsky client,
+// where they can follow any individual community in one tap.
+// If the list ever gets rewritten (rkey change, new CID after an
+// update), the at-uri + cid below need to be updated and the
+// script re-run.
+const LIST_URI =
+	'at://did:plc:tl7hmwtzr2lriwkddcqly4wv/app.bsky.graph.list/3mj2xb5hpp74n';
+const LIST_CID = 'bafyreiafekmlk2dnghd3l7mir3wm4w4bucxxjvjvuipwwwn3jnwyqkgc4a';
 
 /** Find the UTF-8 byte range of `substring` inside `text`, or null. */
 function byteRange(
@@ -142,6 +156,13 @@ const createRes = await fetch(`${PDS}/xrpc/com.atproto.repo.createRecord`, {
 			$type: 'app.bsky.feed.post',
 			text: POST_TEXT,
 			facets,
+			embed: {
+				$type: 'app.bsky.embed.record',
+				record: {
+					uri: LIST_URI,
+					cid: LIST_CID
+				}
+			},
 			createdAt: new Date().toISOString()
 		}
 	})

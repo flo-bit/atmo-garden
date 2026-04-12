@@ -94,6 +94,18 @@ const FEEDS: FeedGeneratorSpec[] = [
 		displayName: 'atmo.garden Top Week',
 		description:
 			'The most-liked submissions from every atmo.garden community over the last 7 days. Browse + submit at https://atmo.garden.'
+	},
+	{
+		rkey: 'following-hot',
+		displayName: 'atmo Following Hot',
+		description:
+			'Hot submissions from only the atmo.garden communities you follow on Bluesky. Follow a community account to add it to this feed. Browse + submit at https://atmo.garden.'
+	},
+	{
+		rkey: 'following-new',
+		displayName: 'atmo Following New',
+		description:
+			'Newest submissions from only the atmo.garden communities you follow on Bluesky. Follow a community account to add it to this feed. Browse + submit at https://atmo.garden.'
 	}
 ];
 

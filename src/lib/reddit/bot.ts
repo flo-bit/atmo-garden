@@ -1719,6 +1719,7 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 	jetstreamEvents: number;
 	postsRefreshed: number;
 	postsDeleted: number;
+	feedCachesBuilt: number;
 	errors: string[];
 }> {
 	const db = env.DB;
@@ -1798,6 +1799,18 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		return 0;
 	});
 
+	// Rebuild the materialized sorted lists + community DID list in
+	// KV so both the main page (`getHomeFeed`) and the bsky feed
+	// generator XRPC handler can serve feed requests without hitting
+	// D1 on the hot path. Runs last so it reflects the freshest state
+	// after refresh + sweep. Non-fatal: any per-sort failure just
+	// leaves the previous KV entry in place (the 5 min expirationTtl
+	// safety net kicks in only if the cron stops running entirely).
+	const feedCachesBuilt = await rebuildFeedCaches(env, db).catch((e) => {
+		errors.push(`feed-cache: ${String(e)}`);
+		return 0;
+	});
+
 	return {
 		communitiesChecked: communities.length,
 		postsCreated,
@@ -1806,8 +1819,71 @@ export async function runCronTick(env: App.Platform['env']): Promise<{
 		jetstreamEvents: jetstreamResult.events,
 		postsRefreshed,
 		postsDeleted,
+		feedCachesBuilt,
 		errors
 	};
+}
+
+// -------------------------------------------------------------------------
+// Feed-cache materialization
+// -------------------------------------------------------------------------
+
+/**
+ * Rebuild the KV-backed sorted lists that both the atmo.garden home
+ * page and the bsky feed generator XRPC handler read from.
+ *
+ * Writes:
+ *   - `sorted:hot`, `sorted:new`, `sorted:top-day`, `sorted:top-week`
+ *     — each a JSON-serialized `PostWithCommunity[]` of up to
+ *     `FEED_CACHE_LIMIT` rows from `getCombinedFeed`.
+ *   - `communities:dids` — a JSON array of all known community DIDs,
+ *     used by the following-feed path's `getRelationships` batch
+ *     lookup.
+ *
+ * Runs the 4 sort queries in parallel (they're independent) so the
+ * total added latency to `runCronTick` is bounded by the slowest
+ * query. Returns the number of keys successfully written.
+ */
+async function rebuildFeedCaches(
+	env: App.Platform['env'],
+	db: D1Database
+): Promise<number> {
+	const { FEED_CACHE_LIMIT, writeSortedList, writeAllCommunityDids } =
+		await import('./feed-cache');
+
+	// All five sorts the main page exposes in its SortTabs. The bsky
+	// feed generator only dispatches hot/new/top-day/top-week, but
+	// materializing top-month here too costs almost nothing (~500 KB
+	// of KV storage) and lets `getHomeFeed` stay on the fast path
+	// across all UI sorts instead of falling back to D1 for one sort.
+	const sorts = ['hot', 'new', 'top-day', 'top-week', 'top-month'] as const;
+	let written = 0;
+
+	await Promise.all([
+		// Full community DID list (small, but refresh it here so the
+		// following-feed path picks up newly-registered communities
+		// within one cron tick).
+		writeAllCommunityDids(env, db)
+			.then(() => {
+				written++;
+			})
+			.catch((e) => {
+				console.error('[rebuildFeedCaches] community DIDs write failed', e);
+			}),
+		// Per-sort materializations.
+		...sorts.map((sort) =>
+			getCombinedFeed(db, FEED_CACHE_LIMIT, sort, 0)
+				.then((rows) => writeSortedList(env, sort, rows))
+				.then(() => {
+					written++;
+				})
+				.catch((e) => {
+					console.error(`[rebuildFeedCaches] ${sort} failed`, e);
+				})
+		)
+	]);
+
+	return written;
 }
 
 // Convenience re-export so routes don't need to import db.ts directly.

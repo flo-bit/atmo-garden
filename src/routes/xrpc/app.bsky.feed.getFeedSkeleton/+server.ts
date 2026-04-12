@@ -1,7 +1,32 @@
 // Bluesky feed generator: serves the `app.bsky.feed.getFeedSkeleton`
-// XRPC endpoint so the two `app.bsky.feed.generator` records published
-// by atmo.garden (`all-hot` and `top-day`) can be subscribed to from
-// any bsky client.
+// XRPC endpoint. Handles two kinds of feeds:
+//
+//   scope = 'all'         — global feeds (all-hot, all-new, top-day,
+//                           top-week). Reads from the KV-materialized
+//                           sorted list, slices the requested page,
+//                           maps to skeleton entries.
+//
+//   scope = 'following'   — per-viewer personalized feeds
+//                           (following-hot, following-new). Reads the
+//                           same KV list, filters down to posts
+//                           whose community_did is in the viewer's
+//                           followed-community set, then slices.
+//                           Zero subscriptions → emit an optional
+//                           placeholder post followed by the all-<sort>
+//                           contents as a fallback.
+//
+// Both paths are zero-D1 on the hot request path — all reads come
+// from Workers KV with an edge-cache tier in front (see
+// src/lib/reddit/feed-cache.ts). The cron tick rebuilds the KV
+// entries once per minute, so feed freshness is bounded by that.
+//
+// Following feeds pull the viewer DID from the `Authorization:
+// Bearer <jwt>` header's `iss` claim, parsed without signature
+// verification. The attack surface is "look at how a different user's
+// feed would render" — which an attacker could already compute from
+// bsky's public follow graph — so unverified parsing is acceptable
+// for MVP. Proper signature verification would require fetching the
+// caller's DID doc and running ES256K, worth doing eventually.
 //
 // Wire shape (per lexicons.atproto.com / app.bsky.feed.getFeedSkeleton):
 //
@@ -19,7 +44,7 @@
 //     }
 //   }
 //
-// atmo.garden serves reposts and quote posts differently:
+// Post routing for skeleton entries:
 //
 //   - Community REPOST rows (`uri` → `app.bsky.feed.repost/...`):
 //     emit `{ post: quoted_post_uri, reason: skeletonReasonRepost(uri) }`.
@@ -31,26 +56,32 @@
 //     emit `{ post: uri }`. The community's quote post is itself a
 //     valid bsky post with an `app.bsky.embed.record` embed, so the
 //     appview hydrates it with the original post rendered inline.
-//
-// Feeds are matched by the rkey of the `feed` query param
-// (`all-hot` / `top-day`). We intentionally don't validate the
-// authority DID — if someone publishes a generator record on their
-// own account that points at our service, they'll get the same
-// feed data, but they can't modify it, so it's harmless.
 
 import type { RequestHandler } from './$types';
 import { json, error } from '@sveltejs/kit';
-import { getCombinedFeed, type PostSort, type PostWithCommunity } from '$lib/reddit/db';
+import type { PostSort, PostWithCommunity } from '$lib/reddit/db';
+import {
+	getCachedSortedList,
+	getCachedViewerCommunityFollows,
+	parseViewerDidFromJwt
+} from '$lib/reddit/feed-cache';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
-/** Map a known feed rkey → the `PostSort` we drive `getCombinedFeed` with. */
-const FEED_RKEY_TO_SORT: Record<string, PostSort> = {
-	'all-hot': 'hot',
-	'all-new': 'new',
-	'top-day': 'top-day',
-	'top-week': 'top-week'
+type FeedConfig = {
+	sort: PostSort;
+	scope: 'all' | 'following';
+};
+
+/** Map a known feed rkey → config (sort + scope). */
+const FEED_RKEY_TO_CONFIG: Record<string, FeedConfig> = {
+	'all-hot': { sort: 'hot', scope: 'all' },
+	'all-new': { sort: 'new', scope: 'all' },
+	'top-day': { sort: 'top-day', scope: 'all' },
+	'top-week': { sort: 'top-week', scope: 'all' },
+	'following-hot': { sort: 'hot', scope: 'following' },
+	'following-new': { sort: 'new', scope: 'following' }
 };
 
 type SkeletonFeedPost = {
@@ -104,53 +135,116 @@ function rowToSkeleton(row: PostWithCommunity): SkeletonFeedPost | null {
 	return null;
 }
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+/**
+ * Build a response envelope with cursor handling. The cursor is an
+ * opaque string per the lexicon spec; we use base-10 offset because
+ * everything downstream is offset-paginated. Only emit a cursor
+ * when the page was filled — saves one empty paginated round-trip
+ * at the end of the feed.
+ */
+function buildResponse(
+	entries: SkeletonFeedPost[],
+	offset: number,
+	limit: number,
+	totalAvailable: number
+): { feed: SkeletonFeedPost[]; cursor?: string } {
+	const page = entries.slice(0, limit);
+	const nextOffset = offset + page.length;
+	const nextCursor = nextOffset < totalAvailable && page.length === limit ? String(nextOffset) : undefined;
+	return {
+		feed: page,
+		...(nextCursor ? { cursor: nextCursor } : {})
+	};
+}
+
+export const GET: RequestHandler = async ({ url, request, platform }) => {
 	const env = platform?.env;
-	if (!env?.DB) error(500, 'DB binding unavailable');
+	if (!env) error(500, 'Platform env unavailable');
 
 	const feedUri = url.searchParams.get('feed');
 	if (!feedUri) error(400, 'missing `feed` parameter');
 
 	const rkey = parseFeedRkey(feedUri);
-	const sort = rkey ? FEED_RKEY_TO_SORT[rkey] : undefined;
-	if (!sort) {
+	const config = rkey ? FEED_RKEY_TO_CONFIG[rkey] : undefined;
+	if (!config) {
 		// Unknown feed. The getFeedSkeleton lexicon defines a single
 		// named error for this case (`errors: [{ name: "UnknownFeed" }]`)
 		// and the atproto XRPC error convention is a 400 with a JSON
 		// body of `{ error: "<name>", message: "<human>" }` — clients
-		// branch on the name to render a "feed unavailable" state,
-		// which is better UX than silently returning an empty feed.
+		// branch on the name to render a "feed unavailable" state.
 		return json(
 			{ error: 'UnknownFeed', message: `Feed not found: ${feedUri}` },
 			{ status: 400 }
 		);
 	}
 
-	// Clamp limit to the [1, MAX_LIMIT] range per the lexicon spec.
+	// Clamp limit to [1, MAX_LIMIT] per the lexicon spec.
 	const limitRaw = url.searchParams.get('limit');
 	const limitParsed = limitRaw ? parseInt(limitRaw, 10) : DEFAULT_LIMIT;
 	const limit = Number.isFinite(limitParsed)
 		? Math.max(1, Math.min(MAX_LIMIT, limitParsed))
 		: DEFAULT_LIMIT;
 
-	// Cursor is an opaque string per spec; we use a base-10 offset
-	// because `getCombinedFeed` already accepts offset-based pagination
-	// and we don't need anything fancier. Invalid cursors fall back
-	// to offset 0.
+	// Cursor → offset. Invalid cursors fall back to 0.
 	const cursorRaw = url.searchParams.get('cursor');
 	const cursorParsed = cursorRaw ? parseInt(cursorRaw, 10) : 0;
 	const offset =
 		Number.isFinite(cursorParsed) && cursorParsed >= 0 ? cursorParsed : 0;
 
-	const rows = await getCombinedFeed(env.DB, limit, sort, offset);
-	const feed = rows.map(rowToSkeleton).filter((x): x is SkeletonFeedPost => x !== null);
+	// Pull the materialized global sorted list once — both scopes
+	// read from the same cached entry.
+	const sortedList = await getCachedSortedList(env, config.sort);
 
-	// Only emit a cursor when we filled the page — saves one empty
-	// paginated round-trip for the common "we've reached the end" case.
-	const nextCursor = rows.length === limit ? String(offset + rows.length) : undefined;
+	if (config.scope === 'all') {
+		const slice = sortedList
+			.slice(offset, offset + limit)
+			.map(rowToSkeleton)
+			.filter((x): x is SkeletonFeedPost => x !== null);
+		return json(buildResponse(slice, offset, limit, sortedList.length));
+	}
 
-	return json({
-		feed,
-		...(nextCursor ? { cursor: nextCursor } : {})
-	});
+	// ----- scope === 'following' -----
+
+	// Extract viewer DID from the service-auth JWT. Missing / malformed
+	// JWT → treat as zero-subscription fallback, which surfaces the
+	// placeholder + all-<sort> contents so an unauthenticated client
+	// peek at the feed still renders something useful.
+	const viewerDid = parseViewerDidFromJwt(request.headers.get('authorization'));
+
+	let filtered: PostWithCommunity[] = [];
+	if (viewerDid) {
+		const followed = await getCachedViewerCommunityFollows(env, viewerDid);
+		if (followed.length > 0) {
+			const followedSet = new Set(followed);
+			filtered = sortedList.filter((r) => followedSet.has(r.community_did));
+		}
+	}
+
+	if (filtered.length === 0) {
+		// Empty-state: show the placeholder post (if configured) then
+		// fall back to the all-<sort> list so the feed always has
+		// content. Placeholder absent (env var empty) → just fall back
+		// to the all-<sort> contents.
+		const placeholderUri = env.FOLLOWING_FEED_PLACEHOLDER_URI ?? '';
+		const fallback = sortedList
+			.slice(offset, offset + limit)
+			.map(rowToSkeleton)
+			.filter((x): x is SkeletonFeedPost => x !== null);
+
+		// Only prepend the placeholder on the first page (offset 0) —
+		// otherwise subsequent pages would have it re-inserted.
+		const entries: SkeletonFeedPost[] =
+			offset === 0 && placeholderUri
+				? [{ post: placeholderUri }, ...fallback].slice(0, limit)
+				: fallback;
+
+		return json(buildResponse(entries, offset, limit, sortedList.length));
+	}
+
+	// Normal path: viewer has real subscriptions.
+	const slice = filtered
+		.slice(offset, offset + limit)
+		.map(rowToSkeleton)
+		.filter((x): x is SkeletonFeedPost => x !== null);
+	return json(buildResponse(slice, offset, limit, filtered.length));
 };

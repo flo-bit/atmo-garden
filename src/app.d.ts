@@ -22,6 +22,15 @@ declare global {
 				COOKIE_SECRET: string;
 				OAUTH_PUBLIC_URL: string;
 				PROFILE_CACHE?: KVNamespace;
+				/**
+				 * KV namespace holding the materialized sorted feed lists
+				 * (`sorted:<sort>` keys, one per PostSort). The cron tick
+				 * rewrites these once per minute from `getCombinedFeed`,
+				 * and both `getHomeFeed` (main page) and the bsky feed
+				 * generator XRPC handler read from them through
+				 * `src/lib/reddit/feed-cache.ts`.
+				 */
+				FEEDS_CACHE: KVNamespace;
 				DB: D1Database;
 				COMMUNITY_ENCRYPTION_KEY: string;
 				ROOKERY_HOSTNAME: string;
@@ -34,6 +43,15 @@ declare global {
 				ATMO_GARDEN_IDENTIFIER?: string;
 				ATMO_GARDEN_APP_PASSWORD?: string;
 				ATMO_GARDEN_LIST_RKEY?: string;
+				/**
+				 * at-uri of the single bsky post emitted as the first entry
+				 * in following-* feeds when the viewer follows zero atmo
+				 * communities. Created once via
+				 * `scripts/create-placeholder-post.ts`. Empty string disables
+				 * the placeholder and the feed falls back to the all-<sort>
+				 * contents.
+				 */
+				FOLLOWING_FEED_PLACEHOLDER_URI?: string;
 			};
 		}
 	}

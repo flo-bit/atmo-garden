@@ -13,7 +13,13 @@
 	},
 	"vars": {
 		"OAUTH_PUBLIC_URL": "https://atmo.garden",
-		"ROOKERY_HOSTNAME": "pds.atmo.garden"
+		"ROOKERY_HOSTNAME": "pds.atmo.garden",
+		// at-uri of the single bsky post emitted as the first entry in
+		// following-* feeds when the viewer follows zero communities.
+		// Created once via `pnpm tsx scripts/create-placeholder-post.ts`
+		// and pasted here. Empty string disables the placeholder (feed
+		// falls back directly to the all-<sort> contents).
+		"FOLLOWING_FEED_PLACEHOLDER_URI": ""
 	},
 	"kv_namespaces": [
 		{
@@ -23,6 +29,10 @@
 		{
 			"binding": "OAUTH_STATES",
 			"id": "8cff96d0d78f4966a09b6b8833cab54e"
+		},
+		{
+			"binding": "FEEDS_CACHE",
+			"id": "c37213227cec459887c3c4bd69ffa636"
 		}
 	],
 	"d1_databases": [

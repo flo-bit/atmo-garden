@@ -3,7 +3,6 @@ import { command, getRequestEvent } from '$app/server';
 import * as v from 'valibot';
 import {
 	getRecentPostsForCommunity,
-	getCombinedFeed,
 	getPostByUri,
 	listCommunities,
 	getCommunityByHandle,
@@ -18,6 +17,7 @@ import {
 	checkCanSubmit,
 	refreshCommunityCache
 } from '../bot';
+import { getCachedSortedList, FEED_CACHE_LIMIT } from '../feed-cache';
 import { parseListUri } from '../list-uri';
 import {
 	ACCENT_COLORS,
@@ -245,6 +245,17 @@ export const getCommunityPost = command(
 	}
 );
 
+/**
+ * Home feed for atmo.garden's main page. Reads from the KV-materialized
+ * sorted list that the cron tick rebuilds every minute — zero D1 on
+ * the hot path. Uses the same cache as the bsky feed generator XRPC
+ * handler so the two stay in sync by construction.
+ *
+ * Pagination is offset-based, capped at `FEED_CACHE_LIMIT` total
+ * rows — infinite scroll on the main page stops when the client has
+ * consumed all materialized entries. If someone needs to go deeper,
+ * bump `FEED_CACHE_LIMIT` in feed-cache.ts.
+ */
 export const getHomeFeed = command(
 	v.object({
 		limit: v.optional(v.number()),
@@ -254,14 +265,12 @@ export const getHomeFeed = command(
 	async (input): Promise<PostWithCommunity[]> => {
 		const { platform } = getRequestEvent();
 		const env = platform?.env;
-		if (!env || !env.DB) return [];
+		if (!env) return [];
 
-		return getCombinedFeed(
-			env.DB,
-			input.limit ?? 50,
-			(input.sort ?? 'hot') as PostSort,
-			input.offset ?? 0
-		);
+		const list = await getCachedSortedList(env, (input.sort ?? 'hot') as PostSort);
+		const offset = Math.max(0, input.offset ?? 0);
+		const limit = Math.max(1, Math.min(FEED_CACHE_LIMIT, input.limit ?? 50));
+		return list.slice(offset, offset + limit);
 	}
 );
 

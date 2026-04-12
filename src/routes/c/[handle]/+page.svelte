@@ -188,6 +188,14 @@
 				const result = await followUser({ did: community.did });
 				followUri = result.uri;
 			}
+			// Purge the edge-cached community-follow set for this
+			// viewer so the bsky following-hot / following-new feed
+			// generators pick up the change on the next request
+			// without waiting for the 5 min TTL. Fire-and-forget —
+			// the refresh is a nice-to-have, not load-bearing.
+			fetch('/api/refresh-follows', { method: 'POST' }).catch((e) => {
+				console.error('[community] refresh-follows failed', e);
+			});
 		} catch (e) {
 			console.error('[community] toggle join failed', e);
 		} finally {

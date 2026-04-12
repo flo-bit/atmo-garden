@@ -11,6 +11,11 @@
 	type SubmitterProfile = { handle: string; displayName: string | null; avatar: string | null };
 
 	const PAGE_SIZE = 50;
+	// Matches `FEED_CACHE_LIMIT` in src/lib/reddit/feed-cache.ts — the
+	// main page is served entirely from the KV-materialized sorted
+	// list, so infinite scroll stops once we've consumed it. Bumping
+	// this here requires also bumping FEED_CACHE_LIMIT on the server.
+	const FEED_MAX_ROWS = 1000;
 
 	let loading = $state(true);
 	let loadingMore = $state(false);
@@ -49,7 +54,7 @@
 				quoted = quotedRes.posts;
 				submitters = profileRes.profiles;
 			}
-			hasMore = rows.length >= PAGE_SIZE;
+			hasMore = rows.length >= PAGE_SIZE && feed.length < FEED_MAX_ROWS;
 		} catch (e) {
 			console.error('[home] loadFeed failed', e);
 		} finally {
@@ -75,7 +80,7 @@
 				quoted = { ...quoted, ...quotedRes.posts };
 				submitters = { ...submitters, ...profileRes.profiles };
 			}
-			if (rows.length < PAGE_SIZE) {
+			if (rows.length < PAGE_SIZE || feed.length >= FEED_MAX_ROWS) {
 				hasMore = false;
 			}
 		} catch (e) {

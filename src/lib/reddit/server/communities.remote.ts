@@ -16,7 +16,8 @@ import {
 	updateCommunity,
 	fetchCommunityConfig,
 	checkCanSubmit,
-	refreshCommunityCache
+	refreshCommunityCache,
+	removeCommunityPost
 } from '../bot';
 import { getCachedSortedList, FEED_CACHE_LIMIT } from '../feed-cache';
 import { parseListUri } from '../list-uri';
@@ -354,5 +355,64 @@ export const editCommunity = command(
 		await refreshCommunityCache(env, row);
 
 		return { ok: true, did: row.did, handle: row.handle };
+	}
+);
+
+/**
+ * Mod-driven removal of a single post from a community. Currently
+ * only the community creator is allowed to remove — the gate lives
+ * on `garden.atmo.community/self`'s `creator` field (same field
+ * that gates `editCommunity`). Multi-mod support later would extend
+ * the record with a `moderators[]` field and relax this check.
+ *
+ * The post is soft-deleted: `markPostRemoved` stamps the D1 row's
+ * `removed_at`, and the bsky wrapper record is deleted best-effort
+ * from the community account's PDS. See `removeCommunityPost` in
+ * `bot.ts` for the full flow, and `0007_post_removal.sql` for the
+ * rationale behind keeping the row in D1 after removal (dedup
+ * protection against resubmission).
+ */
+export const removePost = command(
+	v.object({ uri: v.pipe(v.string(), v.maxLength(512)) }),
+	async (input) => {
+		const { platform, locals } = getRequestEvent();
+		const env = platform?.env;
+		if (!env || !env.DB) error(500, 'DB binding unavailable');
+		if (!locals.did) error(401, 'You must be signed in to remove posts');
+
+		// Look up the post first so we fail fast on a bad URI, and
+		// so we can derive the community from it instead of trusting
+		// a caller-provided community handle.
+		const postRow = await getPostByUri(env.DB, input.uri);
+		if (!postRow) error(404, 'Post not found');
+
+		const communityRow = await getCommunityByHandle(
+			env.DB,
+			postRow.community_handle
+		);
+		if (!communityRow) error(404, 'Community not found');
+
+		// Creator-only gate: re-read `garden.atmo.community/self` so
+		// the check always reflects the current on-network state
+		// (in case creator transfer is ever added). Fail closed if
+		// the record has no creator — legacy rows from before we
+		// started writing it can't be moderated via this endpoint.
+		const config = await fetchCommunityConfig(communityRow.pds, communityRow.did);
+		if (!config.creator) {
+			error(403, 'This community has no recorded creator — removal unavailable');
+		}
+		if (config.creator !== locals.did) {
+			error(403, 'Only the community creator can remove posts');
+		}
+
+		try {
+			await removeCommunityPost(env, env.DB, communityRow, input.uri);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			console.error('[removePost]', e);
+			error(500, `Remove failed: ${msg}`);
+		}
+
+		return { ok: true };
 	}
 );

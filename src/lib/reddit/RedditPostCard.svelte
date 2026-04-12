@@ -1,8 +1,8 @@
 <script lang="ts">
 	/* eslint-disable svelte/no-navigation-without-resolve */
 	import { goto } from '$app/navigation';
-	import { Avatar } from '@foxui/core';
-	import { Heart, MessageCircle, Repeat2 } from '@lucide/svelte';
+	import { Avatar, Button, Popover } from '@foxui/core';
+	import { Ellipsis, Heart, MessageCircle, Repeat2, Trash2 } from '@lucide/svelte';
 	import { wireEmbedClicks } from '$lib/components/embed';
 	import { blueskyPostToPostData, numberToHumanReadable } from '$lib/components';
 	import { Post } from '$lib/components';
@@ -145,14 +145,44 @@
 		accentColor: accentColorProp,
 		/** Resolved profile of the user who submitted this post via DM.
 		  * Caller is responsible for fetching the handle by `row.author_did`. */
-		submitter
+		submitter,
+		/** When true, the card renders a popover "more actions" menu
+		  * with a "Remove post" action. The parent is responsible for
+		  * actually doing the removal via the `onRemove` callback and
+		  * for gating `canModerate` on whatever moderator rule applies
+		  * (currently `user.did === community.creator`). */
+		canModerate = false,
+		/** Called when the mod clicks "Remove post" in the popover.
+		  * The parent typically calls the `removePost` remote command
+		  * and then removes the row from its local state. */
+		onRemove
 	}: {
 		row: CardRow;
 		quoted?: PostView | null;
 		showCommunity?: boolean;
 		accentColor?: string | null;
 		submitter?: { handle: string; displayName: string | null } | null;
+		canModerate?: boolean;
+		onRemove?: () => Promise<void> | void;
 	} = $props();
+
+	// Popover + remove-in-flight state. Local to each card instance
+	// so opening the menu on one post doesn't affect the others.
+	let menuOpen = $state(false);
+	let removeBusy = $state(false);
+
+	async function handleRemoveClick() {
+		if (!onRemove || removeBusy) return;
+		removeBusy = true;
+		menuOpen = false;
+		try {
+			await onRemove();
+		} catch (err) {
+			console.error('[RedditPostCard] remove failed', err);
+		} finally {
+			removeBusy = false;
+		}
+	}
 
 	const communityHandle = $derived(
 		'community_handle' in row ? (row as PostWithCommunity).community_handle : undefined
@@ -307,6 +337,35 @@
 			>
 				@{submitter.handle}
 			</a>
+		{/if}
+		{#if canModerate && onRemove}
+			<div class="ml-auto">
+				<Popover bind:open={menuOpen} side="bottom">
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="iconSm"
+							aria-label="Post actions"
+							class="-my-1 -mr-1"
+						>
+							<Ellipsis size={14} />
+						</Button>
+					{/snippet}
+					<div class="flex min-w-32 flex-col">
+						<Button
+							variant="ghost"
+							size="sm"
+							onclick={handleRemoveClick}
+							disabled={removeBusy}
+							class="justify-start gap-2"
+						>
+							<Trash2 size={10} />
+							{removeBusy ? 'Removing…' : 'Remove post'}
+						</Button>
+					</div>
+				</Popover>
+			</div>
 		{/if}
 	</div>
 

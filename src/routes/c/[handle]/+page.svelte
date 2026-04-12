@@ -5,7 +5,7 @@
 	import { page } from '$app/state';
 	import { Avatar, Button } from '@foxui/core';
 	import { Loader2, Check, UserPlus, Plus, Pencil } from '@lucide/svelte';
-	import { getCommunity, getCommunityPosts } from '$lib/reddit/server/communities.remote';
+	import { getCommunity, getCommunityPosts, removePost } from '$lib/reddit/server/communities.remote';
 	import { getQuotedPosts } from '$lib/reddit/server/quoted-posts.remote';
 	import { followUser, unfollowUser, getProfile, resolveProfiles } from '$lib/atproto/server/feed.remote';
 	import { user } from '$lib/atproto/auth.svelte';
@@ -47,6 +47,14 @@
 	let followUri = $state<string | null>(null);
 	let joinLoading = $state(false);
 	const isFollowing = $derived(followUri !== null);
+
+	// Mod state — currently just the creator. `community.creator`
+	// comes from `garden.atmo.community/self` via the remote's
+	// `fetchCommunityConfig` helper, same source of truth that gates
+	// `editCommunity` + the removePost endpoint.
+	const canModerate = $derived(
+		!!community && !!user.did && community.creator === user.did
+	);
 
 	let submitOpen = $state(false);
 
@@ -170,6 +178,25 @@
 	function onSortChange(next: PostSort) {
 		if (!community) return;
 		loadPosts(community.handle, next);
+	}
+
+	async function handleRemove(uri: string) {
+		// Call the server-side gate + soft-delete. On success, drop
+		// the row from local state so the card disappears immediately
+		// without needing a full reload. Cached quoted-post + submitter
+		// entries can stay — they're keyed on the original bsky URI
+		// and other cards on this page may still reference them.
+		try {
+			await removePost({ uri });
+			posts = posts.filter((p) => p.uri !== uri);
+		} catch (e) {
+			console.error('[community] removePost failed', e);
+			// Surface to the user via a minimal alert for now.
+			// Could upgrade to a toast later if we add one.
+			alert(
+				'Failed to remove post: ' + (e instanceof Error ? e.message : String(e))
+			);
+		}
 	}
 
 	async function onJoinClick() {
@@ -310,6 +337,8 @@
 						accentColor={community.accentColor}
 						submitter={p.author_did ? (submitters[p.author_did] ?? null) : null}
 						showCommunity
+						{canModerate}
+						onRemove={canModerate ? () => handleRemove(p.uri) : undefined}
 					/>
 				{/each}
 			</div>

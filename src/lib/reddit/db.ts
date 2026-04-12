@@ -59,6 +59,15 @@ export type PostRow = {
 	 * get cleaned up.
 	 */
 	missing_since: string | null;
+	/**
+	 * ISO-8601 timestamp set by `markPostRemoved` when a community
+	 * creator actively removes a post via the community page's
+	 * popover menu. All feed queries filter on `removed_at IS NULL`,
+	 * so a removed row disappears from every surface immediately.
+	 * `hasSubmission` deliberately does NOT filter removed rows —
+	 * keeping them dedup-visible blocks re-submission attempts.
+	 */
+	removed_at: string | null;
 };
 
 export type PostWithCommunity = PostRow & {
@@ -176,6 +185,24 @@ export async function updateCommunityProfile(
 }
 
 /**
+ * Mark a post as removed by a community moderator. Stamps
+ * `removed_at = datetime('now')` and leaves every other column
+ * alone. Idempotent: re-running on an already-removed row is a
+ * no-op (the timestamp gets bumped but no extra state changes).
+ *
+ * Filters in the feed queries (`getRecentPostsForCommunity`,
+ * `getCombinedFeed`, `getPostsDueForRefresh`) hide the row
+ * immediately; `hasSubmission` still sees it so re-submission
+ * attempts are blocked by the existing dedup.
+ */
+export async function markPostRemoved(db: D1Database, uri: string): Promise<void> {
+	await db
+		.prepare("UPDATE posts SET removed_at = datetime('now') WHERE uri = ?")
+		.bind(uri)
+		.run();
+}
+
+/**
  * Advance the mention-notifications cursor. The cron tick passes the
  * latest `indexedAt` it observed (or `now` on first-run initialization);
  * future ticks only process mentions strictly greater than this value.
@@ -210,7 +237,7 @@ export async function hasSubmission(
 
 export async function insertPost(
 	db: D1Database,
-	row: Omit<PostRow, 'last_refreshed_at' | 'missing_since'>
+	row: Omit<PostRow, 'last_refreshed_at' | 'missing_since' | 'removed_at'>
 ): Promise<boolean> {
 	try {
 		await db
@@ -314,10 +341,13 @@ export async function getRecentPostsForCommunity(
 	offset = 0
 ): Promise<PostWithCommunity[]> {
 	const { where, order } = sortClauses(sort);
-	// Hide rows currently flagged missing — between the first refresh
-	// tick that detects the underlying bsky post is gone and the sweep
-	// cleaning them up (grace period), we don't want users to see
-	// `(quoted post unavailable)` placeholders in the feed.
+	// Filter out:
+	//   - `missing_since IS NOT NULL` → the underlying bsky post is
+	//     gone/taken-down, grace-period sweep pending. Don't surface
+	//     "(quoted post unavailable)" placeholders.
+	//   - `removed_at IS NOT NULL` → a community mod removed this post.
+	//     Invisible in every feed but still visible to `hasSubmission`
+	//     so the submitter can't re-add it.
 	const res = await db
 		.prepare(
 			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
@@ -325,6 +355,7 @@ export async function getRecentPostsForCommunity(
 			 JOIN communities c ON c.did = p.community_did
 			 WHERE p.community_did = ?
 			   AND p.missing_since IS NULL
+			   AND p.removed_at IS NULL
 			 ${where}
 			 ORDER BY ${order}
 			 LIMIT ? OFFSET ?`
@@ -338,6 +369,14 @@ export async function getRecentPostsForCommunity(
  * Look up a single post by its AT URI, JOINed with community metadata.
  * Used by the post detail page to show which community surfaced the post
  * (plus its title / timestamp / accent color).
+ */
+/**
+ * Look up a single post by URI, JOINed with community metadata.
+ * Does NOT filter on `removed_at` — the `removePost` remote command
+ * uses this helper to look up posts it's about to mark removed,
+ * so filtering would hide the row it needs to act on. Callers that
+ * render to end users should check `removed_at IS NULL` themselves
+ * if they care (the post detail page is the one place this matters).
  */
 export async function getPostByUri(
 	db: D1Database,
@@ -363,18 +402,20 @@ export async function getCombinedFeed(
 	offset = 0
 ): Promise<PostWithCommunity[]> {
 	const { where, order } = sortClauses(sort);
-	// Same rationale as `getRecentPostsForCommunity`: drop rows whose
-	// underlying post is flagged as gone. `sortClauses` returns a
-	// fragment starting with `AND` (written for the community-scoped
-	// query's `WHERE p.community_did = ?` base). For the home feed we
-	// anchor on the missing_since filter so every sort's fragment
-	// stays consistent as an `AND`-prefixed addition.
+	// Same filter rationale as `getRecentPostsForCommunity`: drop
+	// rows flagged as missing (upstream post gone) OR as removed
+	// (community mod action). `sortClauses` returns a fragment
+	// starting with `AND` (written for the community-scoped query's
+	// `WHERE p.community_did = ?` base), so the missing_since +
+	// removed_at filters here provide the base `WHERE` the AND can
+	// attach to.
 	const res = await db
 		.prepare(
 			`SELECT p.*, c.handle AS community_handle, c.display_name AS community_display_name, c.avatar AS community_avatar, c.accent_color AS community_accent_color
 			 FROM posts p
 			 JOIN communities c ON c.did = p.community_did
 			 WHERE p.missing_since IS NULL
+			   AND p.removed_at IS NULL
 			 ${where}
 			 ORDER BY ${order}
 			 LIMIT ? OFFSET ?`
@@ -456,11 +497,14 @@ export async function getPostsDueForRefresh(
 					) AS rank_in_community
 				FROM posts
 				WHERE
-					(julianday('now') - julianday(indexed_at)) * 24 < 1
-					OR ((julianday('now') - julianday(indexed_at)) * 24 < 12 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 5)
-					OR ((julianday('now') - julianday(indexed_at)) * 24 < 24 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 10)
-					OR ((julianday('now') - julianday(indexed_at)) < 7 AND (julianday('now') - julianday(last_refreshed_at)) * 24 >= 1)
-					OR ((julianday('now') - julianday(indexed_at)) >= 7 AND (julianday('now') - julianday(last_refreshed_at)) >= 1)
+					removed_at IS NULL
+					AND (
+						(julianday('now') - julianday(indexed_at)) * 24 < 1
+						OR ((julianday('now') - julianday(indexed_at)) * 24 < 12 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 5)
+						OR ((julianday('now') - julianday(indexed_at)) * 24 < 24 AND (julianday('now') - julianday(last_refreshed_at)) * 1440 >= 10)
+						OR ((julianday('now') - julianday(indexed_at)) < 7 AND (julianday('now') - julianday(last_refreshed_at)) * 24 >= 1)
+						OR ((julianday('now') - julianday(indexed_at)) >= 7 AND (julianday('now') - julianday(last_refreshed_at)) >= 1)
+					)
 			)
 			SELECT uri, quoted_post_uri FROM due
 			ORDER BY rank_in_community ASC, last_refreshed_at ASC

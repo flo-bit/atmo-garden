@@ -1,0 +1,20 @@
+-- Soft-delete column for moderator-removed posts. Gets stamped by
+-- `markPostRemoved` when a community creator clicks "Remove post" in
+-- the community page's popover menu. All feed queries
+-- (`getRecentPostsForCommunity`, `getCombinedFeed`, `getPostByUri`,
+-- and the metric-refresh picker in `getPostsDueForRefresh`) filter on
+-- `removed_at IS NULL`, so a removed post vanishes from every surface
+-- immediately without touching indexes.
+--
+-- Important: `hasSubmission` is deliberately NOT updated to filter
+-- removed rows. Keeping removed entries visible to the dedup check
+-- means a submitter can't bypass a mod decision by re-DMing /
+-- re-mentioning / re-submitting the same post — the unique
+-- `(community_did, quoted_post_uri)` index still matches.
+--
+-- This column is orthogonal to `missing_since`. That one tracks
+-- "underlying bsky post was deleted upstream" and feeds the
+-- sweepDeletedPosts grace-period cleanup. `removed_at` tracks
+-- "community mod actively removed this." A post can legitimately
+-- have both stamped.
+ALTER TABLE posts ADD COLUMN removed_at TEXT;

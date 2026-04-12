@@ -21,6 +21,7 @@ import {
 	insertCommunity,
 	insertPost,
 	listCommunities,
+	markPostRemoved,
 	saveJetstreamCursor,
 	updateCommunityMentionsSeenAt,
 	updateCommunityProfile,
@@ -1581,6 +1582,61 @@ function parseCommunityRecordUri(
 }
 
 /**
+ * Best-effort delete of a community-account wrapper record (quote
+ * post or repost) from the community's PDS via DPoP. For quote posts
+ * (`app.bsky.feed.post`), also deletes the paired threadgate at the
+ * same rkey (see `createSubmissionPost`).
+ *
+ * Shared between the cron's `sweepDeletedPosts` and the mod-driven
+ * `removeCommunityPost` — both paths need exactly the same sequence:
+ * parse URI → deleteRecord(wrapper) → deleteRecord(threadgate if
+ * quote). Errors are logged but not thrown so callers can always
+ * fall through to the D1-side bookkeeping; leaving a dangling wrapper
+ * on bsky is the lesser evil compared to retrying forever on a row
+ * that's no longer user-visible anyway.
+ *
+ * Returns `false` only when the URI is unparseable (caller should
+ * treat the row as nominally processed and drop it from D1). Any
+ * actual bsky-side failure still returns `true`.
+ */
+async function deleteCommunityWrapperRecord(
+	client: WelcomeMatClient,
+	communityHandle: string,
+	uri: string,
+	logPrefix: string
+): Promise<boolean> {
+	const parsed = parseCommunityRecordUri(uri);
+	if (!parsed) {
+		console.error(`[${logPrefix}] unparseable uri`, uri);
+		return false;
+	}
+	const { collection, rkey } = parsed;
+
+	// Delete the wrapper record (quote post or repost).
+	try {
+		await client.deleteRecord(collection, rkey);
+	} catch (e) {
+		console.error(
+			`[${logPrefix}] deleteRecord(${collection}/${rkey}) on ${communityHandle} failed`,
+			e
+		);
+		// Fall through — caller still proceeds with D1 bookkeeping.
+	}
+
+	// Quote posts carry a paired threadgate at the same rkey. Reposts
+	// don't. Silent on failure — probably already gone or never existed.
+	if (collection === 'app.bsky.feed.post') {
+		try {
+			await client.deleteRecord('app.bsky.feed.threadgate', rkey);
+		} catch {
+			/* non-fatal */
+		}
+	}
+
+	return true;
+}
+
+/**
  * Grace period between "first tick we saw the post missing from the
  * appview" and actually deleting it. Short enough that users don't
  * stare at `(quoted post unavailable)` placeholders for long, long
@@ -1659,37 +1715,17 @@ export async function sweepDeletedPosts(
 		}
 
 		for (const uri of uris) {
-			const parsed = parseCommunityRecordUri(uri);
-			if (!parsed) {
-				console.error('[sweepDeletedPosts] unparseable uri, dropping', uri);
-				drainedFromD1.push(uri);
-				deleted++;
-				continue;
-			}
-			const { collection, rkey } = parsed;
-
-			// Delete the wrapper record (quote post or repost).
-			try {
-				await client.deleteRecord(collection, rkey);
-			} catch (e) {
-				console.error(
-					`[sweepDeletedPosts] deleteRecord(${collection}/${rkey}) on ${communityRow.handle} failed`,
-					e
-				);
-				// Fall through — we still drop the D1 row below.
-			}
-
-			// Quote posts carry a paired threadgate at the same rkey
-			// (see `createSubmissionPost`). Reposts don't. Non-fatal.
-			if (collection === 'app.bsky.feed.post') {
-				try {
-					await client.deleteRecord('app.bsky.feed.threadgate', rkey);
-				} catch {
-					// Probably already gone or never existed (pre-threadgate
-					// rows). Not worth logging at error level.
-				}
-			}
-
+			await deleteCommunityWrapperRecord(
+				client,
+				communityRow.handle,
+				uri,
+				'sweepDeletedPosts'
+			);
+			// Even unparseable URIs get dropped from D1 — same as the
+			// pre-refactor behavior. The helper logs those with its
+			// `logPrefix`, and returning `false` just signals "URI
+			// parse failed." There's nothing useful the sweep can do
+			// differently in that case.
 			drainedFromD1.push(uri);
 			deleted++;
 		}
@@ -1705,6 +1741,48 @@ export async function sweepDeletedPosts(
 
 	console.log(`[sweepDeletedPosts] deleted ${deleted} rows`);
 	return deleted;
+}
+
+// -------------------------------------------------------------------------
+// Moderator-driven post removal
+// -------------------------------------------------------------------------
+
+/**
+ * Remove a single post from a community at the direction of a
+ * community moderator (currently only the creator — gate lives in
+ * the `removePost` remote command in `communities.remote.ts`).
+ *
+ * Flow:
+ *   1. Load the community's DPoP client.
+ *   2. Delete the wrapper record (and threadgate for quotes) from
+ *      the community account's PDS via the shared helper. Errors
+ *      are logged but not fatal.
+ *   3. Stamp `removed_at` on the D1 row. The soft-delete keeps the
+ *      row visible to `hasSubmission` so the post can't be
+ *      resubmitted via DM / mention / web while also dropping it
+ *      out of every feed surface via the `removed_at IS NULL`
+ *      filters in `db.ts`.
+ *
+ * This is orthogonal to `sweepDeletedPosts` — that path handles
+ * "underlying bsky post was taken down upstream" via `missing_since`
+ * and hard-deletes the D1 row after a grace period. Mod removals
+ * stay in D1 forever (soft delete) on purpose: persistence gives us
+ * a free audit trail and blocks resubmission indefinitely.
+ */
+export async function removeCommunityPost(
+	env: App.Platform['env'],
+	db: D1Database,
+	communityRow: CommunityRow,
+	postUri: string
+): Promise<void> {
+	const client = await loadClient(env, communityRow);
+	await deleteCommunityWrapperRecord(
+		client,
+		communityRow.handle,
+		postUri,
+		'removeCommunityPost'
+	);
+	await markPostRemoved(db, postUri);
 }
 
 // -------------------------------------------------------------------------

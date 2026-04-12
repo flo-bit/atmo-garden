@@ -363,6 +363,13 @@ export type UpdateCommunityOptions = {
 	/** User-facing description (we prepend the `https://<handle>` link). */
 	description?: string;
 	accentColor?: string;
+	whoCanSubmit?: WhoCanSubmit;
+	/**
+	 * Canonical `at://` URI for `app.bsky.graph.list` when
+	 * `whoCanSubmit === 'list'`. Caller is responsible for parsing
+	 * / normalizing before passing (see `parseListUri`).
+	 */
+	listUri?: string | null;
 };
 
 export async function updateCommunity(
@@ -418,8 +425,14 @@ export async function updateCommunity(
 		}
 	}
 
-	// Merge into garden.atmo.community/self for accent color changes.
-	if (opts.accentColor !== undefined) {
+	// Merge into garden.atmo.community/self for accent color,
+	// whoCanSubmit, and listUri changes.
+	const touchCommunityRecord =
+		opts.accentColor !== undefined ||
+		opts.whoCanSubmit !== undefined ||
+		opts.listUri !== undefined;
+
+	if (touchCommunityRecord) {
 		try {
 			const existing = await getRecord(
 				row.pds,
@@ -429,11 +442,27 @@ export async function updateCommunity(
 			);
 			const baseValue =
 				existing?.value ?? ({ $type: 'garden.atmo.community' } as Record<string, unknown>);
-			await client.putRecord('garden.atmo.community', 'self', {
+			const next: Record<string, unknown> = {
 				...baseValue,
-				$type: 'garden.atmo.community',
-				accentColor: opts.accentColor
-			});
+				$type: 'garden.atmo.community'
+			};
+			if (opts.accentColor !== undefined) next.accentColor = opts.accentColor;
+			if (opts.whoCanSubmit !== undefined) {
+				next.whoCanSubmit = opts.whoCanSubmit;
+				if (opts.whoCanSubmit === 'everyone') {
+					// Clear the list reference when switching to
+					// "everyone" so stale list URIs don't hang around.
+					delete next.listUri;
+				}
+			}
+			if (opts.listUri !== undefined) {
+				if (opts.listUri) {
+					next.listUri = opts.listUri;
+				} else {
+					delete next.listUri;
+				}
+			}
+			await client.putRecord('garden.atmo.community', 'self', next);
 		} catch (e) {
 			console.error('[updateCommunity] failed to update community record', e);
 			throw e;

@@ -52,11 +52,15 @@ type PublicCommunity = Omit<
 	postCount: number;
 };
 
-/** PublicCommunity + viewer-specific access state + creator (from the
-  * on-network garden.atmo.community/self record). */
+/** PublicCommunity + viewer-specific access state + raw config fields
+  * from the on-network `garden.atmo.community/self` record. The edit
+  * page uses `whoCanSubmit` + `listUri` to seed its "who can post"
+  * radio + list-URL input. */
 type CommunityWithAccess = PublicCommunity & {
 	canSubmit: boolean;
 	creator: string | null;
+	whoCanSubmit: 'everyone' | 'list';
+	listUri: string | null;
 };
 
 function sanitize(row: CommunityRow & { post_count?: number }): PublicCommunity {
@@ -199,15 +203,25 @@ export const getCommunity = command(
 		// from everyone).
 		let creator: string | null = null;
 		let canSubmit = true;
+		let whoCanSubmit: 'everyone' | 'list' = 'everyone';
+		let listUri: string | null = null;
 		try {
 			const config = await fetchCommunityConfig(row.pds, row.did);
 			creator = config.creator;
 			canSubmit = await checkCanSubmit(config, locals.did ?? null);
+			whoCanSubmit = config.whoCanSubmit;
+			listUri = config.listUri;
 		} catch (e) {
 			console.error('[getCommunity] config fetch failed', e);
 		}
 
-		return { ...sanitize(row), canSubmit, creator };
+		return {
+			...sanitize(row),
+			canSubmit,
+			creator,
+			whoCanSubmit,
+			listUri
+		};
 	}
 );
 
@@ -295,7 +309,9 @@ export const editCommunity = command(
 				base64: v.pipe(v.string(), v.maxLength(2 * 1024 * 1024)),
 				mimeType: v.picklist(ALLOWED_AVATAR_MIMES)
 			})
-		)
+		),
+		whoCanSubmit: v.optional(v.picklist(['everyone', 'list'])),
+		listUrl: v.optional(v.pipe(v.string(), v.maxLength(512)))
 	}),
 	async (input) => {
 		const { platform, locals } = getRequestEvent();
@@ -327,10 +343,28 @@ export const editCommunity = command(
 			avatarPayload = { bytes, mimeType: input.avatar.mimeType };
 		}
 
+		// Parse + normalize the optional allowlist URL into a canonical
+		// at-URI, same as the register flow.
+		let listUri: string | null | undefined;
+		if (input.whoCanSubmit === 'list') {
+			if (!input.listUrl?.trim()) {
+				error(400, 'List URL is required when "members of a list" is selected');
+			}
+			try {
+				listUri = await parseListUri(input.listUrl);
+			} catch (e) {
+				error(400, e instanceof Error ? e.message : 'Invalid list URL');
+			}
+		} else if (input.whoCanSubmit === 'everyone') {
+			// Clear the list URI when switching to "everyone".
+			listUri = null;
+		}
+
 		if (
 			avatarPayload === undefined &&
 			input.description === undefined &&
-			input.accentColor === undefined
+			input.accentColor === undefined &&
+			input.whoCanSubmit === undefined
 		) {
 			error(400, 'No fields to update');
 		}
@@ -339,7 +373,9 @@ export const editCommunity = command(
 			await updateCommunity(env, row, {
 				avatar: avatarPayload,
 				description: input.description,
-				accentColor: input.accentColor
+				accentColor: input.accentColor,
+				whoCanSubmit: input.whoCanSubmit,
+				listUri
 			});
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);

@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { Avatar, Button, Textarea } from '@foxui/core';
+	import { Avatar, Button, Input, Textarea } from '@foxui/core';
 	import { ColorSelect } from '@foxui/colors';
 	import { Loader2, ImagePlus, X, ArrowLeft } from '@lucide/svelte';
 	import { getCommunity, editCommunity } from '$lib/reddit/server/communities.remote';
@@ -34,6 +34,8 @@
 	});
 	let avatarFile = $state<File | null>(null);
 	let avatarPreview = $state<string | null>(null);
+	let whoCanSubmit = $state<'everyone' | 'list'>('everyone');
+	let listUrl = $state('');
 	let submitting = $state(false);
 	let errorMsg = $state<string | null>(null);
 
@@ -71,6 +73,20 @@
 				class: `text-${info.accentColor}-500`,
 				label: info.accentColor
 			};
+			whoCanSubmit = info.whoCanSubmit ?? 'everyone';
+			// If the community has a list URI, pre-fill the input with
+			// the bsky.app URL form (more user-friendly than the at-uri).
+			// The server normalizes back to at-uri on save.
+			if (info.listUri) {
+				const m = info.listUri.match(
+					/^at:\/\/(did:[^/]+)\/app\.bsky\.graph\.list\/([^/]+)$/
+				);
+				listUrl = m
+					? `https://bsky.app/profile/${m[1]}/lists/${m[2]}`
+					: info.listUri;
+			} else {
+				listUrl = '';
+			}
 		} catch (e) {
 			console.error('[edit] load failed', e);
 			loadError = 'Failed to load community';
@@ -124,6 +140,10 @@
 			errorMsg = `Description is ${descriptionGraphemes - descriptionBudget} graphemes over the limit`;
 			return;
 		}
+		if (whoCanSubmit === 'list' && !listUrl.trim()) {
+			errorMsg = 'Please enter a list URL (or switch to "everyone").';
+			return;
+		}
 		errorMsg = null;
 		submitting = true;
 		try {
@@ -132,6 +152,8 @@
 				description?: string;
 				accentColor?: AccentColor;
 				avatar?: { base64: string; mimeType: 'image/jpeg' | 'image/png' | 'image/webp' };
+				whoCanSubmit?: 'everyone' | 'list';
+				listUrl?: string;
 			} = { handle: community.handle };
 
 			// Only send description if it changed. Empty string is a valid
@@ -149,8 +171,20 @@
 					mimeType: avatarFile.type as 'image/jpeg' | 'image/png' | 'image/webp'
 				};
 			}
+			if (whoCanSubmit !== (community.whoCanSubmit ?? 'everyone')) {
+				payload.whoCanSubmit = whoCanSubmit;
+			}
+			if (whoCanSubmit === 'list') {
+				payload.listUrl = listUrl.trim();
+			}
 
-			if (!payload.description && !payload.accentColor && !payload.avatar) {
+			if (
+				!payload.description &&
+				!payload.accentColor &&
+				!payload.avatar &&
+				!payload.whoCanSubmit &&
+				!payload.listUrl
+			) {
 				errorMsg = 'Nothing changed.';
 				return;
 			}
@@ -266,6 +300,56 @@
 				<span class="text-sm font-medium">Accent color</span>
 				<ColorSelect bind:selected={accentColor} colors={accentOptions} />
 			</div>
+
+			<fieldset class="flex flex-col gap-2">
+				<legend class="mb-1 text-sm font-medium">Who can post</legend>
+				{#each [
+					{ value: 'everyone' as const, label: 'Everyone' },
+					{ value: 'list' as const, label: 'Only members of a list' }
+				] as option (option.value)}
+					<label class="group flex cursor-pointer items-center gap-3 text-sm">
+						<input
+							type="radio"
+							name="whoCanSubmit"
+							value={option.value}
+							bind:group={whoCanSubmit}
+							disabled={submitting}
+							class="peer sr-only"
+						/>
+						<span
+							aria-hidden="true"
+							class="
+								border-accent-500/40 bg-accent-100/60
+								dark:border-accent-500/20 dark:bg-accent-950/20
+								peer-checked:border-accent-500/60 peer-checked:bg-accent-200/60
+								dark:peer-checked:border-accent-500/30 dark:peer-checked:bg-accent-900/40
+								peer-focus-visible:outline-accent-500
+								peer-disabled:cursor-not-allowed peer-disabled:opacity-50
+								flex size-5 shrink-0 items-center justify-center rounded-full border backdrop-blur-lg
+								transition-colors duration-100
+								peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2
+								before:size-2 before:rounded-full before:bg-accent-600 dark:before:bg-accent-400
+								before:opacity-0 peer-checked:before:opacity-100 before:transition-opacity
+								before:content-['']
+							"
+						></span>
+						<span>{option.label}</span>
+					</label>
+				{/each}
+				{#if whoCanSubmit === 'list'}
+					<Input
+						type="url"
+						bind:value={listUrl}
+						placeholder="https://bsky.app/profile/…/lists/…"
+						disabled={submitting}
+						sizeVariant="sm"
+						class="mt-1"
+					/>
+					<span class="text-base-500 dark:text-base-400 text-xs">
+						Paste a Bluesky list URL or at-URI. Only accounts on that list will be able to submit posts.
+					</span>
+				{/if}
+			</fieldset>
 
 			{#if errorMsg}
 				<div class="rounded-lg bg-red-100 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-300">
